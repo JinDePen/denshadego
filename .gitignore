@@ -1,0 +1,6 @@
+.DS_Store
+.claude/
+.playwright-cli/
+.hermes/
+CLAUDE.md
+style.css

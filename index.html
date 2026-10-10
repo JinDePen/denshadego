@@ -1,0 +1,3070 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<!-- 「ホーム画面に追加」 then opens full screen, without browser chrome -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="山手線運転">
+<meta name="theme-color" content="#000000">
+<title>山手線運転シミュレーター - Yamanote Line Train Simulator</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { width:100%; height:100%; overflow:hidden; background:#000;
+  overscroll-behavior:none; -webkit-user-select:none; user-select:none;
+  -webkit-touch-callout:none; -webkit-tap-highlight-color:transparent; }
+/* the game sits inside the safe area, clear of notches and the home bar */
+canvas { display:block; position:fixed; touch-action:none;
+  left:env(safe-area-inset-left,0px); top:env(safe-area-inset-top,0px);
+  width:calc(100% - env(safe-area-inset-left,0px) - env(safe-area-inset-right,0px));
+  height:calc(100% - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px)); }
+#overlay {
+  position:fixed; top:0; left:0; width:100%; height:100%;
+  display:none; justify-content:center; align-items:center;
+  background:rgba(0,0,0,0.9); z-index:100; color:#ccd;
+  font-family:'Courier New',monospace;
+}
+.overlay-inner { text-align:center; max-height:90vh; overflow-y:auto; padding:20px; }
+.overlay-inner h1 { font-size:36px; color:#fc0; margin-bottom:12px; }
+.rank-letter { font-size:72px; font-weight:bold; line-height:1; }
+.rank-title { font-size:20px; margin-top:4px; }
+.total-score { font-size:24px; color:#fff; margin:12px 0; }
+.score-breakdown { font-size:14px; color:#aab; margin:10px 0; }
+.score-breakdown div { margin:3px 0; }
+.station-scores { margin-top:16px; text-align:left; max-height:40vh; overflow-y:auto; }
+.station-scores h3 { text-align:center; color:#8ac; margin-bottom:8px; }
+.station-row { display:flex; justify-content:space-between; padding:2px 8px; font-size:13px; border-bottom:1px solid #2a2a3a; }
+.restart-hint { font-size:18px; color:#fc0; margin-top:20px; animation:pulse 1.5s infinite; }
+@keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay"></div>
+<script>
+// ============================================================
+// 山手線運転シミュレーター - Cab View Edition
+// ============================================================
+const C = document.getElementById('c');
+const X = C.getContext('2d');
+const OV = document.getElementById('overlay');
+
+let W, H;
+// touch devices get on-screen controls; LOWQ trades sharpness and effects for frame rate
+let TOUCH = window.matchMedia('(pointer: coarse)').matches;
+let LOWQ = false, QUALITY = 'auto';   // 'auto' | 'high' | 'low'
+
+// Draw in CSS pixels, back the canvas with device pixels (capped at 2×) so text
+// and lines stay sharp on phones.
+function resize() {
+  W = C.clientWidth || window.innerWidth; H = C.clientHeight || window.innerHeight;
+  const dpr = LOWQ ? 1 : Math.min(window.devicePixelRatio || 1, 2);
+  C.width = Math.round(W*dpr); C.height = Math.round(H*dpr);
+  X.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ============================================================
+// STATION DATA
+// ============================================================
+const TOTAL_LOOP = 34500;
+const STATIONS = [
+  { id:0,  name:"品川",     nameEn:"Shinagawa",          pos:0,     stopTime:40 },
+  { id:1,  name:"大崎",     nameEn:"Osaki",              pos:2000,  stopTime:30 },
+  { id:2,  name:"五反田",   nameEn:"Gotanda",            pos:2900,  stopTime:30 },
+  { id:3,  name:"目黒",     nameEn:"Meguro",             pos:4100,  stopTime:30 },
+  { id:4,  name:"恵比寿",   nameEn:"Ebisu",              pos:5600,  stopTime:35 },
+  { id:5,  name:"渋谷",     nameEn:"Shibuya",            pos:7200,  stopTime:45 },
+  { id:6,  name:"原宿",     nameEn:"Harajuku",           pos:8400,  stopTime:30 },
+  { id:7,  name:"代々木",   nameEn:"Yoyogi",             pos:9900,  stopTime:30 },
+  { id:8,  name:"新宿",     nameEn:"Shinjuku",           pos:10600, stopTime:50 },
+  { id:9,  name:"新大久保", nameEn:"Shin-Okubo",         pos:11900, stopTime:30 },
+  { id:10, name:"高田馬場", nameEn:"Takadanobaba",       pos:13300, stopTime:30 },
+  { id:11, name:"目白",     nameEn:"Mejiro",             pos:14200, stopTime:30 },
+  { id:12, name:"池袋",     nameEn:"Ikebukuro",          pos:15400, stopTime:50 },
+  { id:13, name:"大塚",     nameEn:"Otsuka",             pos:17200, stopTime:30 },
+  { id:14, name:"巣鴨",     nameEn:"Sugamo",             pos:18300, stopTime:30 },
+  { id:15, name:"駒込",     nameEn:"Komagome",           pos:19000, stopTime:30 },
+  { id:16, name:"田端",     nameEn:"Tabata",             pos:20600, stopTime:35 },
+  { id:17, name:"西日暮里", nameEn:"Nishi-Nippori",      pos:21400, stopTime:30 },
+  { id:18, name:"日暮里",   nameEn:"Nippori",            pos:21900, stopTime:35 },
+  { id:19, name:"鶯谷",     nameEn:"Uguisudani",         pos:23000, stopTime:30 },
+  { id:20, name:"上野",     nameEn:"Ueno",               pos:24100, stopTime:45 },
+  { id:21, name:"御徒町",   nameEn:"Okachimachi",        pos:24700, stopTime:30 },
+  { id:22, name:"秋葉原",   nameEn:"Akihabara",          pos:25700, stopTime:40 },
+  { id:23, name:"神田",     nameEn:"Kanda",              pos:26400, stopTime:30 },
+  { id:24, name:"東京",     nameEn:"Tokyo",              pos:27700, stopTime:60 },
+  { id:25, name:"有楽町",   nameEn:"Yurakucho",          pos:28500, stopTime:30 },
+  { id:26, name:"新橋",     nameEn:"Shimbashi",          pos:29600, stopTime:35 },
+  { id:27, name:"浜松町",   nameEn:"Hamamatsucho",       pos:30800, stopTime:30 },
+  { id:28, name:"田町",     nameEn:"Tamachi",            pos:32300, stopTime:30 },
+  { id:29, name:"高輪GW",   nameEn:"Takanawa Gateway",   pos:33600, stopTime:30 },
+];
+
+// ============================================================
+// PHYSICS
+// ============================================================
+const GRADE_ACC = 9.8*3.6/1000;   // km/h/s of gravity per ‰ of gradient
+const PHYSICS = {
+  MAX_SPEED: 90,
+  ACCEL_MAX: 3.0,   // at P5
+  BRAKE_MAX: 4.0,   // at B8
+  BRAKE_EMG: 5.2,
+  COAST_DECEL: 0.3,
+};
+
+// ============================================================
+// GAME STATE
+// ============================================================
+const S = {
+  phase: 'start',
+  train: { position:0, speed:0, lever:0, emergency:false },
+  // lever: -8(B8)..0(N)..+5(P5). Positive=power, negative=brake, 0=neutral.
+  // On screen the handle runs EB/B8..B1 at the TOP, N, then P1..P5 DOWNWARD.
+  currentStation: 0,
+  stationsVisited: [],
+  totalScore: 0,
+  elapsedTime: 0,     // running time over the lap (the TIMS clock)
+  segTime: 0,         // running time since this section's 運行指示灯 lit
+  boardingTime: 0,    // 'departing': countdown until the 運行指示灯 lights
+  goFlash: 0,         // seconds the lit lamp stays on screen after it lights
+  prevAccel: 0,
+  speedViolations: 0,
+  comfortViolations: 0,
+  lastViolationCheck: 0,
+};
+
+// ============================================================
+// HELPERS (unchanged game logic)
+// ============================================================
+function loopPos(p) { return p % TOTAL_LOOP; }
+function getNextStationIndex(pos) {
+  const lp = loopPos(pos);
+  for (let i = 0; i < STATIONS.length; i++) if (STATIONS[i].pos > lp) return i;
+  return 0;
+}
+function distanceToNextStation(pos) {
+  const lp = loopPos(pos), si = getNextStationIndex(pos), sp = STATIONS[si].pos;
+  if (sp > lp) return sp - lp;
+  return (TOTAL_LOOP - lp) + sp;
+}
+// Speed limits come from track geometry alone: each curve zone carries a limit
+// set by its radius, active from the curve's start to its end; on straight
+// track (and through stations) the 90 km/h line speed applies.
+// Curve speed limit from the standard curving-speed formula for narrow gauge:
+// V² = 127·R·(C + Cd) / G, with the regulation figures for 在来線 — cant C up
+// C (see CANT below) and a permitted cant deficiency Cd of 60 mm for ordinary trains,
+// G ≈ 1120 mm between rail centres — rounded down to 5 km/h and capped at the
+// line's ATC maximum of 90 km/h. JR does not publish the Yamanote's actual
+// per-curve limits. Cant is set below the 105 mm maximum, to 80 mm: urban
+// commuter curves usually carry less cant than the regulation allows.
+const CANT = 80, CANT_DEF = 60, RAIL_G = 1120;
+function curveLimitOf(r) {
+  const v = Math.sqrt(127*r*(CANT + CANT_DEF)/RAIL_G);
+  return Math.min(PHYSICS.MAX_SPEED, Math.floor(v/5)*5);
+}
+function getSpeedLimit(pos) {
+  const lp = loopPos(pos);
+  for (const c of CURVES) {
+    if (lp >= c[0] && lp <= c[1]) {
+      const l = curveLimitOf(c[2]);
+      if (l < 90) return l;
+    }
+  }
+  return 90;   // line speed
+}
+// Nearest restricting curve ahead, for the TIMS advance display.
+function getNextCurveLimit(pos) {
+  const lp = loopPos(pos);
+  let best = null;
+  for (const c of CURVES) {
+    const l = curveLimitOf(c[2]);
+    if (l >= 90) continue;
+    let d = c[0] - lp;
+    if (d < 0) d += TOTAL_LOOP;
+    if (d < 600 && (!best || d < best.dist)) best = { limit: l, dist: d };
+  }
+  return best;
+}
+function formatTime(s) {
+  const m = Math.floor(s/60), sec = Math.floor(s%60);
+  return String(m).padStart(2,'0')+':'+String(sec).padStart(2,'0');
+}
+function evaluateStopScore(err) {
+  if (err < 0.3) return 40; if (err < 0.5) return 38;
+  if (err < 1.0) return 35; if (err < 2.0) return 30;
+  if (err < 3.0) return 25; if (err < 5.0) return 20;
+  if (err < 8.0) return 10; if (err < 15.0) return 5;
+  return 0;
+}
+// 運転時分 — each section's scheduled running time, worked out from the train's
+// own performance driven the way a real driver does rather than flat out:
+// about P4 acceleration, service braking about B6, a few km/h under every
+// limit, plus 余裕時分 (recovery margin), rounded up to 5 s. Built at load from
+// the track itself, so it always matches the curves and their limits.
+const RUN_ACC = 2.5, RUN_BRK = 2.8;   // km/h/s
+const RUN_MARGIN = 3;                 // km/h held under each limit
+const RUN_SLACK = 1.08;               // 余裕時分
+let LOOP_TIME = 0;                    // due time for the full lap, back into 品川
+function sectionRunTime(i) {
+  const a = STATIONS[i].pos, b = i+1 < STATIONS.length ? STATIONS[i+1].pos : TOTAL_LOOP;
+  const n = Math.round(b - a), A = RUN_ACC/3.6, B = RUN_BRK/3.6, v = new Float64Array(n+1);
+  const g = (p) => gradeAt(p)*GRADE_ACC/3.6;                    // gravity along the gradient, m/s²
+  for (let k = 1; k <= n; k++)                                  // accelerate, capped by the limit
+    v[k] = Math.min((getSpeedLimit(a+k) - RUN_MARGIN)/3.6, Math.sqrt(Math.max(0, v[k-1]*v[k-1] + 2*(A - g(a+k)))));
+  v[n] = 0;
+  for (let k = n-1; k >= 0; k--)                                // brake in time (a climb helps)
+    v[k] = Math.min(v[k], Math.sqrt(Math.max(0, v[k+1]*v[k+1] + 2*(B + g(a+k)))));
+  let t = 0;
+  for (let k = 1; k <= n; k++) t += 2/(v[k] + v[k-1] || 1e-9);
+  return t;
+}
+function buildTimetable() {
+  let t = 0;
+  STATIONS.forEach((st, i) => { st.time = t; t += Math.ceil(sectionRunTime(i)*RUN_SLACK/5)*5; });
+  LOOP_TIME = t;
+}
+function stationDueTime(sid) { return sid===0 ? LOOP_TIME : STATIONS[sid].time; }
+// scheduled running time of the section that ends at station sid
+function sectionDue(sid) {
+  const prev = (sid + STATIONS.length - 1) % STATIONS.length;
+  return stationDueTime(sid) - STATIONS[prev].time;
+}
+// each section is timed on its own, from its 運行指示灯 to the stop;
+// only lateness costs points — arriving early is not penalised
+function getTimeScore(sid, segTime) {
+  const e = Math.max(0, segTime - sectionDue(sid));
+  if (e <= 5) return 10; if (e <= 10) return 8;
+  if (e <= 15) return 7; if (e <= 20) return 5;
+  if (e <= 30) return 3; return 0;
+}
+function getRank(sc) {
+  const p = sc/3000;
+  if (p>=0.95) return {rank:'S',title:'鉄道マスター',color:'#FFD700'};
+  if (p>=0.90) return {rank:'A',title:'優秀運転士',color:'#FF6347'};
+  if (p>=0.80) return {rank:'B',title:'一人前運転士',color:'#1E90FF'};
+  if (p>=0.65) return {rank:'C',title:'見習い運転士',color:'#3CB371'};
+  return {rank:'D',title:'要再訓練',color:'#808080'};
+}
+
+// ============================================================
+// GAME FLOW (unchanged)
+// ============================================================
+// Each section: stop → score summary (wait for 確定) → doors close → the
+// 運行指示灯 lights → only then can the train be driven and the clock runs.
+const DEPART_T = 3.2;        // seconds from 確定 until the 運行指示灯 lights
+const ARRIVE_ZONE = 10;      // halting within this many metres short of the line is a clean stop
+const OVERRUN_MAX = 120;     // halting past the line still arrives (with a penalty) up to here
+const OVERRUN_PENALTY = 15;  // stop-score points lost for halting past the line
+function startGame() {
+  S.phase='departing'; S.train.position=0; S.train.speed=0;
+  S.train.lever=0; S.train.emergency=false;
+  S.currentStation=0; S.stationsVisited=[]; S.totalScore=0; S.elapsedTime=0; S.segTime=0;
+  S.boardingTime=DEPART_T; S.goFlash=0; S.prevAccel=0; S.speedViolations=0; S.comfortViolations=0;
+  S.lastViolationCheck=0;
+  OV.style.display='none'; OV.innerHTML='';
+}
+// 確定 on the stop summary: close the doors and wait for the 運行指示灯
+function departFromStation() {
+  if (S.phase!=='stopped') return;
+  if (S.currentStation===0 && S.stationsVisited.length>1) { S.phase='result'; showResult(); return; }
+  S.phase='departing'; S.boardingTime=DEPART_T;
+  S.speedViolations=0; S.comfortViolations=0; S.prevAccel=0;
+}
+function arriveAtStation() {
+  // The target is always the station after the current one — getNextStationIndex
+  // would skip ahead if the train has rolled past the stop line.
+  const si = (S.currentStation+1) % STATIONS.length;
+  let sd = STATIONS[si].pos - loopPos(S.train.position);
+  if (sd >  TOTAL_LOOP/2) sd -= TOTAL_LOOP;
+  if (sd < -TOTAL_LOOP/2) sd += TOTAL_LOOP;
+  const stopError = Math.abs(sd);
+  let stopScore = evaluateStopScore(stopError);
+  if (sd < 0) stopScore = Math.max(0, stopScore - OVERRUN_PENALTY);   // halted past the line
+  const speedScore = Math.max(0, 30 - S.speedViolations*5);
+  const comfortScore = Math.max(0, 20 - S.comfortViolations*3);
+  const timeScore = getTimeScore(si, S.segTime);
+  const st = stopScore+speedScore+comfortScore+timeScore;
+  S.totalScore += st;
+  S.stationsVisited.push({stationId:si,name:STATIONS[si].name,scores:{stop:stopScore,speed:speedScore,comfort:comfortScore,time:timeScore},total:st,
+    stopErr:sd, segTime:S.segTime, segDue:sectionDue(si), speedV:S.speedViolations, comfortV:S.comfortViolations});
+  S.currentStation = si;
+  S.phase='stopped';   // the summary stays up until the driver presses 確定
+}
+function showResult() {
+  const r = getRank(S.totalScore);
+  let h=`<div class="overlay-inner"><h1>一周完了！</h1>`;
+  h+=`<div style="color:${r.color}"><div class="rank-letter">${r.rank}</div><div class="rank-title">${r.title}</div></div>`;
+  h+=`<div class="total-score">総合得点: ${S.totalScore} / 3000</div>`;
+  h+=`<div class="score-breakdown">`;
+  const ts=S.stationsVisited.reduce((a,v)=>a+v.scores.stop,0);
+  const tss=S.stationsVisited.reduce((a,v)=>a+v.scores.speed,0);
+  const tc=S.stationsVisited.reduce((a,v)=>a+v.scores.comfort,0);
+  const tt=S.stationsVisited.reduce((a,v)=>a+v.scores.time,0);
+  h+=`<div>停止精度: ${ts}/${S.stationsVisited.length*40}</div>`;
+  h+=`<div>速度遵守: ${tss}/${S.stationsVisited.length*30}</div>`;
+  h+=`<div>乗り心地: ${tc}/${S.stationsVisited.length*20}</div>`;
+  h+=`<div>定時性:   ${tt}/${S.stationsVisited.length*10}</div></div>`;
+  h+=`<div class="station-scores"><h3>駅別成績</h3>`;
+  for(const v of S.stationsVisited) h+=`<div class="station-row"><span>${v.name}</span><span>${v.total}/100</span></div>`;
+  h+=`</div><div class="restart-hint">Press ENTER to restart</div></div>`;
+  OV.innerHTML=h; OV.style.display='flex';
+}
+
+// ============================================================
+// INPUT (unchanged)
+// ============================================================
+// Lever actions, shared by the keyboard and the touch controls.
+function canDrive() { return S.phase === 'running' || S.phase === 'approaching'; }   // 運行指示灯 lit
+function leverUp() {          // handle up = brake side; one step past B8 is the EB position at the top
+  if (S.train.emergency) return;
+  if (S.train.lever <= -8) S.train.emergency = true; else S.train.lever--;
+}
+function leverDown() {        // handle down = power side; leaving EB drops back to B8 first
+  if (S.train.emergency) { S.train.emergency = false; S.train.lever = -8; }
+  else S.train.lever = Math.min(5, S.train.lever + 1);
+}
+function leverNeutral() { S.train.lever = 0; S.train.emergency = false; }
+function emergencyBrake() { S.train.emergency = true; S.train.lever = -8; }
+// put the handle straight into notch i (0 = EB at the top, 9 = N, 14 = P5)
+function setNotch(i) {
+  i = Math.max(0, Math.min(NOTCHES.length-1, i));
+  const was = S.train.emergency ? 0 : 9 + S.train.lever;
+  if (i === was) return;
+  if (i === 0) emergencyBrake(); else { S.train.emergency = false; S.train.lever = i - 9; }
+  if (navigator.vibrate) navigator.vibrate(8);    // a click for each notch (Android)
+}
+// Enter / tap: start from the title, 確定 on the summary, back to the title after the lap
+function primaryAction() {
+  if (S.phase === 'start') {
+    startGame(); HINT.until = performance.now() + 8000;
+    if (TOUCH && document.documentElement.requestFullscreen && !document.fullscreenElement)
+      document.documentElement.requestFullscreen().then(() => screen.orientation && screen.orientation.lock &&
+        screen.orientation.lock('landscape')).catch(() => {});
+  } else if (S.phase === 'result') { S.phase = 'start'; OV.style.display = 'none'; OV.innerHTML = ''; }
+  else if (S.phase === 'stopped') departFromStation();
+}
+function nextRoute() { if (S.phase === 'start') ROUTE.set(ROUTE.dir === 'outer' ? 'inner' : 'outer'); }
+
+window.addEventListener('keydown', (e) => {
+  if (e.key==='Enter'||e.key===' ') e.preventDefault();
+  AUDIO.init();                       // audio may only start from a user gesture
+  if (e.key==='m' || e.key==='M') AUDIO.toggle();
+  if (e.key==='h' || e.key==='H') HINT.pinned = !HINT.pinned;
+  if (e.key==='t' || e.key==='T') ENV.cycle('time');
+  if (e.key==='y' || e.key==='Y') ENV.cycle('wx');
+  if (e.key==='d' || e.key==='D') nextRoute();
+  if ((e.key==='q' || e.key==='Q') && S.phase==='start') cycleQuality();
+  if (e.key==='Enter') { primaryAction(); return; }
+  if (!canDrive()) return;            // no driving until the 運行指示灯 lights
+  switch(e.key) {
+    case 'ArrowUp': case 'w': case 'W': leverUp(); break;
+    case 'ArrowDown': case 's': case 'S': leverDown(); break;
+    case ' ': emergencyBrake(); break;
+    case 'r': case 'R': leverNeutral(); break;
+  }
+});
+
+// Pointer input (touch and mouse). Renderers push tappable rects onto HIT each
+// frame; the master controller is handled separately so its grip can be dragged.
+const HIT = [];
+let DRAG = null, lastGripTap = 0, TIMS_BIG = false;
+function hit(x, y, w, h, act) { HIT.push({x, y, w, h, act}); }
+C.addEventListener('pointerdown', (e) => {
+  if (e.pointerType === 'touch') TOUCH = true;
+  AUDIO.init();
+  const x = e.offsetX, y = e.offsetY;
+  if (TIMS_BIG) { TIMS_BIG = false; return; }       // any tap closes the enlarged TIMS
+  for (let i = HIT.length-1; i >= 0; i--) {
+    const h = HIT[i];
+    if (x >= h.x && x <= h.x+h.w && y >= h.y && y <= h.y+h.h) { h.act(); return; }
+  }
+  const g = ctrlGeom();
+  if (!canDrive() || x < g.x0 || x > g.x1 || y < g.py - g.L || y > g.by) return;
+  if (y > g.gy - g.stepY*2 && y < g.hy + g.stepY*1.5) {            // on the grip or shaft: grab it
+    const now = performance.now();
+    if (now - lastGripTap < 320) { leverNeutral(); lastGripTap = 0; return; }   // double tap = N
+    lastGripTap = now;
+    DRAG = {id: e.pointerId, y0: y, i0: g.idx};
+    C.setPointerCapture(e.pointerId);
+  } else (y < g.hy ? leverUp : leverDown)();                      // tap above / below: one notch
+});
+C.addEventListener('pointermove', (e) => {
+  if (!DRAG || e.pointerId !== DRAG.id || !canDrive()) return;
+  const g = ctrlGeom();
+  // a notch every 14 px at least: on a phone the drawn scale is only ~5 px a notch
+  setNotch(DRAG.i0 + Math.round((e.offsetY - DRAG.y0)/Math.max(g.stepY, 14)));
+});
+const endDrag = (e) => { if (DRAG && e.pointerId === DRAG.id) DRAG = null; };
+C.addEventListener('pointerup', endDrag);
+C.addEventListener('pointercancel', endDrag);
+OV.addEventListener('pointerdown', () => { if (S.phase === 'result') primaryAction(); });   // tap to restart
+
+// ============================================================
+// PHYSICS UPDATE (unchanged)
+// ============================================================
+function updatePhysics(dt) {
+  const t = S.train; let a = 0;
+  if (t.emergency) a = -PHYSICS.BRAKE_EMG;
+  else if (t.lever < 0) a = -PHYSICS.BRAKE_MAX * (-t.lever / 8);   // brake B1..B8
+  else if (t.lever > 0) a = PHYSICS.ACCEL_MAX * (t.lever / 5);      // power P1..P5
+  else a = -PHYSICS.COAST_DECEL;                                     // neutral coast
+  a -= gradeAt(t.position)*GRADE_ACC;                               // 勾配: 34‰ ≈ 1.2 km/h/s
+  t.speed = Math.max(0, Math.min(PHYSICS.MAX_SPEED, t.speed+a*dt));
+  t.position += (t.speed/3.6)*dt;
+  return a;
+}
+
+// ============================================================
+// GAME STATE UPDATE (unchanged)
+// ============================================================
+function updateGame(dt) {
+  if (S.phase==='start'||S.phase==='result') return;
+  S.worldTime = (S.worldTime||0) + dt;   // keeps opposing services moving while we stand
+  if (S.phase==='departing') {
+    S.boardingTime -= dt;
+    if (S.boardingTime <= 0) { S.phase='running'; S.segTime=0; S.goFlash=1.8; }   // 運行指示灯 lit
+    return;
+  }
+  if (S.phase==='stopped') return;   // waiting for 確定 on the summary
+  S.elapsedTime += dt; S.segTime += dt;
+  if (S.goFlash > 0) S.goFlash -= dt;
+  const accel = updatePhysics(dt);
+  S.lastViolationCheck += dt;
+  if (S.lastViolationCheck>0.5) {
+    S.lastViolationCheck=0;
+    if (S.train.speed > getSpeedLimit(S.train.position)+2) S.speedViolations++;
+  }
+  const pa=S.prevAccel; S.prevAccel=accel;
+  if (Math.abs(accel-pa)>5.0 && S.train.speed>5) S.comfortViolations++;
+  const dist = distanceToNextStation(S.train.position);
+  if (dist<800 && S.phase==='running') S.phase='approaching';
+  // Signed distance to the target's stop line (negative = already past it).
+  // Halting within ARRIVE_ZONE short of the line is a clean arrival; halting past
+  // it still arrives, with a penalty. Running OVERRUN_MAX beyond misses the stop.
+  const ti = (S.currentStation+1) % STATIONS.length;
+  let sd = STATIONS[ti].pos - loopPos(S.train.position);
+  if (sd >  TOTAL_LOOP/2) sd -= TOTAL_LOOP;
+  if (sd < -TOTAL_LOOP/2) sd += TOTAL_LOOP;
+  if (S.phase==='approaching' && sd < -OVERRUN_MAX) {
+    S.phase='running';
+    S.currentStation = ti;   // station missed — everything now targets the next one
+  }
+  if (S.train.speed===0 && sd <= ARRIVE_ZONE && sd >= -OVERRUN_MAX && (S.train.lever < 0 || S.phase==='approaching'))
+    arriveAtStation();
+}
+
+// ============================================================
+// CAB LAYOUT — windscreen / console / hint bar
+// ============================================================
+const LAY = {
+  get winX() { return W*0.045; },
+  get winY() { return H*0.055; },
+  get winW() { return W*0.91; },
+  get winH() { return H*0.545; },
+  get winB() { return this.winY + this.winH; },
+  get conY() { return this.winB; },
+  get conH() { return H*0.335; },
+  get hintY() { return this.conY + this.conH; },
+};
+
+// ============================================================
+// CAMERA — pinhole projection. ALL world units are metres:
+//   x = lateral offset from track centre (+ = right)
+//   y = height above rail head (+ = up)
+//   z = distance ahead of the driver's eye
+// Screen x = cx + f*x/z ; screen y = horizon + f*(eye-y)/z
+// ============================================================
+const CAM = {
+  EYE_H: 2.6,   // driver's eye above rail head
+  NEAR: 7,      // nearest z we draw (closer is hidden by the train nose)
+  dx: 0, dy: 0, pitch: 0, roll: 0,   // cab body motion (m, m, rad, rad) — set by CABMOTION
+  get f() { return W*0.80; },
+  get cx() { return W*0.5; },
+  get horizonY() { return LAY.winY + LAY.winH*0.45 + this.f*this.pitch; },
+  project(x, y, z) {
+    const s = this.f/z;                     // pixels per metre at this depth
+    return { x: this.cx + (x + CURVE.at(z) - this.dx)*s, y: this.horizonY + (this.EYE_H + this.dy - y - VPROF.at(z))*s, s:s };
+  },
+};
+
+// ============================================================
+// TRACK CURVATURE — the loop bends like the real line.
+// [from, to, radius, dir] on the loop; dir +1 curves right, -1 left.
+// The whole world is projected through CURVE.at(z), so track, platforms
+// and city all bend together. The train runs 外回り (品川→大崎→渋谷…),
+// clockwise round the loop, hence the rightward bias.
+// Curves are measured from the real track: OpenStreetMap's JR山手線 route
+// geometry, walked 外回り, curvature taken over ±30 m, kept where R < 2000 m
+// and the turn is at least 8°. R is the radius of the tightest part (where
+// curvature is within 80% of its peak — 品川→大崎 comes out R350, the
+// published figure), rounded to 50 m; positions are mapped onto the game's
+// 営業キロ between neighbouring stations.
+// ============================================================
+const CURVES = [
+  [210, 430, 550, +1],    // 品川→大崎 22°
+  [960, 1880, 350, +1],   // 品川→大崎 136°
+  [2890, 3240, 600, -1],  // 五反田→目黒 30°
+  [3480, 3880, 400, +1],  // 五反田→目黒 51°
+  [4470, 4650, 300, -1],  // 目黒→恵比寿 25°
+  [4680, 4800, 500, +1],  // 目黒→恵比寿 10°
+  [6070, 6270, 750, -1],  // 恵比寿→渋谷 11°
+  [6970, 7100, 550, +1],  // 渋谷構内 9°
+  [7190, 7420, 450, +1],  // 渋谷→原宿 28°
+  [8890, 9050, 450, -1],  // 原宿→代々木 17°
+  [9180, 9350, 1200, -1], // 原宿→代々木 9°
+  [9620, 9720, 500, -1],  // 原宿→代々木 9°
+  [9780, 9870, 350, +1],  // 代々木構内 10°
+  [10640, 10840, 750, +1], // 新宿→新大久保 12°
+  [10910, 11030, 400, -1], // 新宿→新大久保 12°
+  [11190, 11430, 400, +1], // 新宿→新大久保 26°
+  [11510, 11640, 500, -1], // 新宿→新大久保 8°
+  [12100, 12280, 850, +1], // 新大久保→高田馬場 10°
+  [15580, 16280, 450, +1], // 池袋→大塚 84°
+  [17400, 17830, 450, -1], // 大塚→巣鴨 44°
+  [19760, 20300, 300, +1], // 駒込→田端 78°
+  [21100, 21280, 950, +1], // 西日暮里構内 9°
+  [22240, 22400, 700, +1], // 日暮里→鶯谷 12°
+  [23150, 23610, 300, +1], // 鶯谷→上野 76°
+  [24230, 24440, 300, -1], // 上野→御徒町 39°
+  [24470, 24590, 450, +1], // 御徒町構内 17°
+  [25260, 25380, 650, -1], // 御徒町→秋葉原 8°
+  [25860, 26020, 650, +1], // 秋葉原→神田 11°
+  [28140, 28390, 400, +1], // 東京→有楽町 28°
+  [28670, 28900, 600, -1], // 有楽町→新橋 21°
+  [29250, 29530, 450, -1], // 新橋構内 31°
+  [30020, 30250, 1050, +1], // 新橋→浜松町 11°
+  [31050, 31550, 500, +1], // 浜松町→田町 31°
+  [31560, 31770, 600, +1], // 浜松町→田町 15°
+  [32530, 32930, 400, -1], // 田町→高輪GW 44°
+  [33000, 33090, 450, +1], // 田町→高輪GW 8°
+  [34190, 34440, 500, -1], // 品川構内 21°
+];
+function curvatureAt(p) {
+  const lp = loopPos(p);
+  for (const c of CURVES) {
+    if (lp >= c[0]-80 && lp <= c[1]+80) {   // 80 m clothoid ramp at each end
+      const t = Math.min(1, (lp-c[0]+80)/80, (c[1]+80-lp)/80);
+      return t * c[3] / c[2];
+    }
+  }
+  return 0;
+}
+const CURVE = {
+  step: 4, n: 0, offs: null, lastHead: 0,
+  update() {   // integrate curvature ahead of the train, once per frame
+    if (!this.offs) { this.n = Math.ceil(FAR/this.step)+2; this.offs = new Float32Array(this.n); }
+    let head = 0, off = 0;
+    const p0 = S.train.position;
+    for (let i=0;i<this.n;i++) {
+      this.offs[i] = off;
+      head += curvatureAt(p0 + i*this.step) * this.step;
+      off  += head * this.step;
+    }
+    this.lastHead = head;
+  },
+  at(z) {
+    if (!this.offs || z <= 0) return 0;
+    const zm = (this.n-1)*this.step;
+    if (z >= zm) return this.offs[this.n-1] + this.lastHead*(z-zm);  // landmarks beyond FAR
+    const i = z/this.step, i0 = i|0, f = i-i0;
+    return this.offs[i0]*(1-f) + this.offs[i0+1]*f;
+  },
+};
+
+// ============================================================
+// TRACK PROFILE — 勾配. Rail-level elevation (m) at breakpoints along the loop,
+// constant gradient between them. Built from the GSI (国土地理院) 1 m laser
+// elevation model sampled every 50 m along the OSM track, smoothed over
+// ±250 m and fitted with gradient sections of at least 250 m. It follows the
+// ground, so cuttings are right but viaducts are not lifted. One exception is
+// added by hand: 西日暮里 is an elevated station squeezed in (1971) between
+// ground-level 田端 and 日暮里, so 外回り climbs to it at 34‰ — the steepest
+// grade on the line — and drops away at about 29‰. The ramp lengths and the
+// station's rail height are not published; they are set so the 34‰ / 29‰
+// figures hold and both platforms stay level.
+// ============================================================
+const PROFILE = [
+  [0, 3.1], [1270, 6.4], [1900, 3.7], [2660, 4.5], [3070, 8.1], [3580, 15.2],
+  [3830, 22.4], [4140, 26.2], [4800, 27.6], [5520, 19.5], [5940, 17.3], [7110, 15.6],
+  [8700, 30.7], [9320, 33.3], [9760, 37.4], [10390, 36.0], [11280, 38.0], [12110, 33.0],
+  [13440, 21.1], [13900, 23.0], [15000, 31.4], [15340, 32.3], [16110, 25.3], [17060, 24.5],
+  [18090, 20.6], [18650, 20.0], [19260, 15.0], [19830, 14.8], [20450, 7.4], [20720, 5.9],
+  [20830, 5.9], [21130, 16.1], [21430, 16.1], [21740, 7.1],   // 田端→西日暮里 34‰, 西日暮里 level, 29‰ down
+  [21960, 6.6], [23930, 11.0], [24400, 4.4], [24720, 3.2], [26360, 4.8],
+  [28830, 2.6], [30210, 4.7], [30590, 3.6], [31530, 6.0], [32320, 3.3], [34500, 3.1],
+];
+function elevAt(p) {
+  const lp = loopPos(p);
+  for (let i = 1; i < PROFILE.length; i++)
+    if (lp <= PROFILE[i][0]) {
+      const [a, ea] = PROFILE[i-1], [b, eb] = PROFILE[i];
+      return ea + (eb-ea)*(lp-a)/(b-a);
+    }
+  return PROFILE[0][1];
+}
+// gradient in ‰, + = climbing in the direction of travel
+function gradeAt(p) {
+  const lp = loopPos(p);
+  for (let i = 1; i < PROFILE.length; i++)
+    if (lp <= PROFILE[i][0]) return (PROFILE[i][1]-PROFILE[i-1][1])/(PROFILE[i][0]-PROFILE[i-1][0])*1000;
+  return 0;
+}
+// The cab sits on the local gradient, so only the CHANGE of gradient ahead is
+// visible: VPROF.at(z) is how far the rail at z rises above the cab's own slope.
+const VPROF = {
+  step: 4, n: 0, offs: null, slope: 0,
+  update() {
+    if (!this.offs) { this.n = Math.ceil(FAR/this.step)+2; this.offs = new Float32Array(this.n); }
+    const p0 = S.train.position, e0 = elevAt(p0);
+    this.slope = (elevAt(p0+5) - elevAt(p0-5))/10;
+    for (let i = 0; i < this.n; i++) this.offs[i] = elevAt(p0 + i*this.step) - e0 - this.slope*i*this.step;
+  },
+  at(z) {
+    if (!this.offs || z <= 0) return 0;
+    const i = z/this.step, i0 = Math.min(i|0, this.n-2), f = Math.min(1, i-i0);
+    return this.offs[i0]*(1-f) + this.offs[i0+1]*f;
+  },
+};
+
+// ============================================================
+// CAB MOTION — the body rides on springs, so the view is never still.
+//   pitch  lags the applied power/brake, and rocks back as the train halts
+//   roll   leans into curves with the cant, plus a slow hunting sway
+//   dy     rail-joint knocks as each axle crosses a joint (every RAIL_LEN)
+//   dx     lateral sway from track irregularity
+// Everything but the pitch spring is keyed to position, so a standing train is still.
+// ============================================================
+const RAIL_LEN = 25;
+const AXLES = [[2.5,1], [4.6,1], [16.3,0.45], [18.4,0.45]];   // metres behind the eye, knock strength
+const CABMOTION = {
+  pv: 0, bv: 0, lastPos: 0,
+  update(dt) {
+    const t = S.train, p = t.position, v = t.speed/PHYSICS.MAX_SPEED;
+    const acc = t.speed > 0 ? S.prevAccel : 0;
+    // braking dips the nose (horizon rises); under-damped so a halt rocks back
+    this.pv += ((acc*0.0016 - CAM.pitch)*28 - this.pv*4.2) * dt;
+    CAM.pitch += this.pv*dt;
+    for (const [off, k] of AXLES)
+      if (Math.floor((p-off)/RAIL_LEN) !== Math.floor((this.lastPos-off)/RAIL_LEN)) {
+        this.bv -= 1.4*k*(0.25+v);       // vertical jolt
+        AUDIO.knock(k, v);
+        this.pv -= 0.006*k*(0.25+v);     // and a nod of the whole body
+      }
+    this.lastPos = p;
+    for (let n = Math.ceil(dt/0.02), h = dt/n; n > 0; n--) {   // stiff spring: substep for stability
+      this.bv += (-CAM.dy*900 - this.bv*14) * h;
+      CAM.dy += this.bv*h;
+    }
+    CAM.dx = v*(0.035*Math.sin(p*0.203) + 0.014*Math.sin(p*0.537 + 1.3));
+    CAM.roll = curvatureAt(p)*28 + v*0.0035*Math.sin(p*0.151);
+  },
+};
+
+// ============================================================
+// ENVIRONMENT — time of day and weather, chosen with T / Y.
+// Scene colours all pass through haze(), which applies ENV.grade (ambient
+// light) and fades toward ENV.fog. Surfaces under station lighting use
+// ENV.lamp instead (DL items flagged lamp). Light sources — signals, LEDs,
+// lit windows — keep literal colours or use glow(), so they shine at night.
+// ============================================================
+const TIMES = {
+  day:   { name:'昼',   start:10*3600+12*60, grade:[1,1,1],          fog:[156,178,200], lamp:[1,1,1],
+           sunEl:0.62, sunAz:-2.2, sky:['#0d2440','#2f5c86','#7ea4c2','#c6d8e4'],
+           cloudTop:[255,255,255], cloudBase:[172,184,200] },
+  eve:   { name:'夕方', start:16*3600+48*60, grade:[1.0,0.80,0.66],  fog:[208,150,122], lamp:[0.95,0.9,0.84],
+           sunEl:0.09, sunAz:-2.2, sky:['#232650','#5d4a78','#d9895e','#f4c48e'],
+           cloudTop:[255,204,158], cloudBase:[120,94,118] },
+  night: { name:'夜',   start:20*3600+12*60, grade:[0.24,0.27,0.38], fog:[28,34,52],    lamp:[0.84,0.84,0.80],
+           sunEl:0.62, sunAz:-2.2, sky:['#02050b','#070d1a','#121a2c','#3a3238'],
+           cloudTop:[50,50,60], cloudBase:[24,26,36] },
+};
+const WEATHERS = {
+  clear: { name:'晴れ', dim:[1,1,1],          fogMix:0,    fogK:1,   clouds:18, overcast:0 },
+  cloud: { name:'曇り', dim:[0.84,0.86,0.9],  fogMix:0.55, fogK:1.3, clouds:24, overcast:0.75 },
+  rain:  { name:'雨',   dim:[0.62,0.66,0.72], fogMix:0.75, fogK:2.0, clouds:30, overcast:0.95 },
+};
+const ENV = {
+  time: 'day', wx: 'clear',
+  apply() {
+    const T = this.T = TIMES[this.time], Wx = this.Wx = WEATHERS[this.wx];
+    this.start = T.start;
+    this.night = this.time === 'night';
+    this.rain = this.wx === 'rain';
+    this.sunOn = !this.night && this.wx === 'clear';   // otherwise light is diffuse: no shadows
+    this.grade = T.grade.map((c,i) => c*Wx.dim[i]);
+    const fg = T.fog.map(c => c*Wx.dim[1]), grey = (fg[0]+fg[1]+fg[2])/3;
+    this.fog = fg.map(c => c + (grey-c)*Wx.fogMix);
+    this.fogK = Wx.fogK;
+    this.lamp = this.time === 'day' ? this.grade : T.lamp.map((c,i) => Math.max(c, this.grade[i]));
+  },
+  cycle(key) {
+    const ks = Object.keys(key === 'time' ? TIMES : WEATHERS);
+    this[key] = ks[(ks.indexOf(this[key]) + 1) % ks.length];
+    this.apply();
+  },
+};
+ENV.apply();
+let LAMP = false;   // true while drawing a station interior: lit by its lamps, not the sky
+
+// ============================================================
+// SUNLIGHT — one afternoon sun, fixed in the world. The train's heading
+// (curvature integrated round the loop) turns it relative to the cab, so
+// faces brighten and shadows swing as the line bends.
+// SUN is a unit vector TOWARD the sun in cab axes: x right, y up, z ahead.
+// ============================================================
+function buildHeading() {
+  const step = 4, n = Math.ceil(TOTAL_LOOP/step)+1, h = new Float32Array(n);
+  for (let i=1;i<n;i++) h[i] = h[i-1] + curvatureAt((i-1)*step)*step;
+  // the loop closes exactly one turn: right for 外回り, left for 内回り
+  const fix = (Math.sign(h[n-1])*2*Math.PI - h[n-1]) / (n-1);
+  for (let i=1;i<n;i++) h[i] += fix*i;
+  return h;
+}
+let HEADING = buildHeading();
+const SUN = {
+  x: 0, y: 0, z: 0, hd: 0,
+  update() {
+    const u = (loopPos(S.train.position)+TOTAL_LOOP)%TOTAL_LOOP/4, i = u|0, f = u-i;
+    // 内回り sets off from 品川 facing the other way, so its heading starts at π
+    const hd = HEADING[i]*(1-f) + HEADING[Math.min(i+1, HEADING.length-1)]*f + ROUTE.hd0;
+    const el = ENV.T.sunEl, b = ENV.T.sunAz - hd, c = Math.cos(el);
+    this.hd = hd;   // the sky (clouds, stars) turns with the heading too
+    this.x = c*Math.sin(b); this.y = Math.sin(el); this.z = c*Math.cos(b);
+  },
+};
+// Brightness factor by surface facing: 'f' toward the cab, 'l' facing left,
+// 'r' facing right, 't' facing up.
+function lit(n) {
+  if (!ENV.sunOn) return 0.86;
+  const d = n==='f' ? -SUN.z : n==='l' ? -SUN.x : n==='r' ? SUN.x : SUN.y;
+  return 0.66 + 0.5*Math.max(0, d);
+}
+
+const GAUGE = 0.5335;  // half of 1.067 m narrow gauge
+const FAR = 420;       // draw distance, metres
+const JP = '"Hiragino Sans","Yu Gothic",sans-serif';
+
+// Deterministic per-position noise so scenery never flickers.
+function hash(n) {
+  let h = Math.imul(n|0, 374761393) + 668265263 | 0;
+  h = Math.imul(h ^ h>>>13, 1274126177);
+  return ((h ^ h>>>16) >>> 0) / 4294967296;
+}
+// Atmospheric perspective: fade a colour toward horizon haze with distance.
+function haze(z, r, g, b) {
+  const G = LAMP ? ENV.lamp : ENV.grade;
+  return fogged(z, r*G[0], g*G[1], b*G[2]);
+}
+// A light source: fogged with distance but never dimmed by the ambient light.
+function glow(z, r, g, b) { return fogged(z, r, g, b); }
+function fogged(z, r, g, b) {
+  const t = Math.min(1, Math.pow(Math.max(0, z)*ENV.fogK/FAR, 0.65))*0.82, F = ENV.fog;
+  return `rgb(${Math.round(r+(F[0]-r)*t)},${Math.round(g+(F[1]-g)*t)},${Math.round(b+(F[2]-b)*t)})`;
+}
+function quad(a, b, c, d, fill) {
+  X.fillStyle = fill;
+  X.beginPath();
+  X.moveTo(a.x,a.y); X.lineTo(b.x,b.y); X.lineTo(c.x,c.y); X.lineTo(d.x,d.y);
+  X.closePath(); X.fill();
+}
+// Anything reaching behind the eye is clipped at Z_CLIP: a corner at z <= 0
+// projects mirrored to infinity and paints a frame-wide streak for one frame.
+const Z_CLIP = 0.3;
+// Horizontal slab: spans x1..x2 at height y, from depth z1 to z2.
+function slab(x1, x2, y, z1, z2, fill) {
+  if (z1 > z2) { const t = z1; z1 = z2; z2 = t; }
+  if (z2 <= Z_CLIP) return;
+  z1 = Math.max(z1, Z_CLIP);
+  quad(CAM.project(x1,y,z1), CAM.project(x2,y,z1), CAM.project(x2,y,z2), CAM.project(x1,y,z2), fill);
+}
+// Vertical wall: at lateral x, from height y1..y2, from depth z1 to z2.
+function wall(x, y1, y2, z1, z2, fill) {
+  if (z1 > z2) { const t = z1; z1 = z2; z2 = t; }
+  if (z2 <= Z_CLIP) return;
+  z1 = Math.max(z1, Z_CLIP);
+  quad(CAM.project(x,y1,z1), CAM.project(x,y2,z1), CAM.project(x,y2,z2), CAM.project(x,y1,z2), fill);
+}
+// Flat face square-on to the track: x1..x2 by y1..y2, all at depth z.
+function face(x1, x2, y1, y2, z, fill) {
+  if (z <= Z_CLIP) return;
+  quad(CAM.project(x1,y2,z), CAM.project(x2,y2,z), CAM.project(x2,y1,z), CAM.project(x1,y1,z), fill);
+}
+// Cast shadow on a horizontal surface: a translucent dark slab.
+function shadow(x1, x2, y, z1, z2, a) {
+  if (!ENV.sunOn) return;
+  X.globalAlpha = a; slab(x1, x2, y, z1, z2, '#0b0d12'); X.globalAlpha = 1;
+}
+function rrect(x, y, w, h, r) {
+  X.beginPath();
+  X.moveTo(x+r,y);
+  X.arcTo(x+w,y,x+w,y+h,r); X.arcTo(x+w,y+h,x,y+h,r);
+  X.arcTo(x,y+h,x,y,r);     X.arcTo(x,y,x+w,y,r);
+  X.closePath();
+}
+function text(str, x, y, font, fill, align) {
+  X.font = font; X.fillStyle = fill; X.textAlign = align||'start';
+  X.fillText(str, x, y); X.textAlign = 'start';
+}
+
+// ============================================================
+// SCENE: SKY & GROUND
+// ============================================================
+const rgba = (c, a) => `rgba(${Math.round(c[0])},${Math.round(c[1])},${Math.round(c[2])},${a})`;
+const mix = (c, d, t) => c.map((v,i) => v + (d[i]-v)*t);
+// Clouds and stars sit at infinity: placed by bearing and elevation in the
+// world, so they only turn with the train's heading, never approach.
+const CLOUDS = Array.from({length: 30}, (_, i) => ({
+  b: hash(i*7+1)*Math.PI*2, e: 0.03 + Math.pow(hash(i*7+2), 1.5)*0.2,
+  w: 0.10 + hash(i*7+3)*0.24, n: 5 + (hash(i*7+4)*6|0), seed: i*97,
+}));
+function skyPoint(b, e) {
+  let rel = b - SUN.hd;
+  rel = ((rel + Math.PI) % (Math.PI*2) + Math.PI*2) % (Math.PI*2) - Math.PI;
+  if (Math.abs(rel) > 1.15) return null;
+  return { x: CAM.cx + CAM.f*Math.tan(rel), y: CAM.horizonY - CAM.f*Math.tan(e) };
+}
+function drawClouds() {
+  const T = ENV.T, Wx = ENV.Wx, drift = (S.worldTime||0)*0.0004;
+  const og = Wx.overcast, d = ENV.grade;
+  const top = mix(T.cloudTop, [196*d[0], 200*d[1], 206*d[2]], og*0.8);
+  const base = mix(T.cloudBase, [112*d[0], 118*d[1], 128*d[2]], og*0.8);
+  for (let i = 0; i < Wx.clouds; i++) {
+    const c = CLOUDS[i], p = skyPoint(c.b + drift, c.e);
+    if (!p) continue;
+    const w = CAM.f*c.w*(0.35 + c.e*4)*(1 + og*1.6);   // low = far = small; overcast spreads
+    for (let pass = 0; pass < 2; pass++) {             // shaded underside, then the lit tops
+      X.fillStyle = rgba(pass ? top : base, (pass ? 0.85 : 0.8)*(1 - og*0.55));
+      for (let j = 0; j < c.n; j++) {
+        const r = w*(0.10 + hash(c.seed+j+90)*0.12);
+        const px = p.x + (hash(c.seed+j)-0.5)*w;
+        const py = p.y - hash(c.seed+j+50)*w*0.14 - (pass ? r*0.28 : 0);
+        X.beginPath(); X.ellipse(px, py, r*(pass ? 0.86 : 1), r*(pass ? 0.6 : 0.62), 0, 0, Math.PI*2); X.fill();
+      }
+    }
+  }
+}
+function drawSky() {
+  const hz = CAM.horizonY, T = ENV.T, og = ENV.Wx.overcast;
+  const g = X.createLinearGradient(0, LAY.winY, 0, hz);
+  g.addColorStop(0, T.sky[0]); g.addColorStop(0.45, T.sky[1]);
+  g.addColorStop(0.82, T.sky[2]); g.addColorStop(1, T.sky[3]);
+  // filled well past the window: the view is rolled by CAM.roll
+  X.fillStyle = g; X.fillRect(-W*0.2, -H*0.2, W*1.4, hz+H*0.2);
+  if (ENV.night && og < 0.5) {                        // a few stars the city glow hasn't drowned
+    X.fillStyle = 'rgba(220,226,240,0.7)';
+    for (let i = 0; i < 90; i++) {
+      const p = skyPoint(hash(i*3+11)*Math.PI*2, 0.12 + hash(i*3+12)*0.5);
+      if (p) X.fillRect(p.x, p.y, hash(i)<0.2 ? 2 : 1, hash(i)<0.2 ? 2 : 1);
+    }
+  }
+  if (ENV.time === 'eve' && ENV.sunOn && SUN.z > 0.05) {   // low sun and its halo
+    const sx = CAM.cx + CAM.f*SUN.x/SUN.z, sy = hz - CAM.f*SUN.y/SUN.z, r = CAM.f*0.012;
+    const sg = X.createRadialGradient(sx, sy, 0, sx, sy, r*14);
+    sg.addColorStop(0, 'rgba(255,236,190,0.9)'); sg.addColorStop(0.08, 'rgba(255,190,120,0.45)');
+    sg.addColorStop(1, 'rgba(255,150,90,0)');
+    X.fillStyle = sg; X.fillRect(sx-r*14, sy-r*14, r*28, r*28);
+    X.fillStyle = '#fff1d6'; X.beginPath(); X.arc(sx, sy, r, 0, Math.PI*2); X.fill();
+  }
+  if (og > 0) {                                       // an overcast deck over everything
+    const d = ENV.grade, oc = X.createLinearGradient(0, LAY.winY, 0, hz);
+    oc.addColorStop(0, rgba([118*d[0], 124*d[1], 134*d[2]], og));
+    oc.addColorStop(1, rgba(ENV.fog, og));
+    X.fillStyle = oc; X.fillRect(-W*0.2, -H*0.2, W*1.4, hz+H*0.2);
+  }
+  drawClouds();
+  const g2 = X.createLinearGradient(0, hz, 0, LAY.winB);
+  g2.addColorStop(0, haze(FAR*0.8, 128,136,120)); g2.addColorStop(0.12, haze(80, 77,85,68));
+  g2.addColorStop(1, haze(4, 25,28,21));
+  X.fillStyle = g2; X.fillRect(-W*0.2, hz, W*1.4, LAY.winB-hz+H*0.2);
+}
+// Aerial perspective at eye level: soften the line where the city meets the ground.
+function drawHorizonHaze() {
+  const hz = CAM.horizonY, f = CAM.f, F = ENV.fog, k = ENV.rain ? 0.7 : 0.45;
+  const g = X.createLinearGradient(0, hz - f*0.07, 0, hz + f*0.012);
+  g.addColorStop(0, rgba(F, 0)); g.addColorStop(0.8, rgba(F, k)); g.addColorStop(1, rgba(F, k*0.3));
+  X.fillStyle = g; X.fillRect(-W*0.2, hz - f*0.07, W*1.4, f*0.082);
+}
+
+// ============================================================
+// SCENE: TRACKSIDE CITY — real Yamanote lineside character.
+// Each stretch of the loop reproduces the actual district passed:
+//   den   building density 0..1        h     [min,max] building height (m)
+//   pal   façade base RGB              glass office-tower look, denser lit windows
+//   signs billboard probability        trees standalone-tree probability
+//   forest solid green wall on that side (-1 left / +1 right)
+//   barrier 防音壁 on the lineside walls instead of a wire fence
+//   cut   walled cutting               brick red-brick arch viaduct (神田〜新橋)
+const DISTRICTS = [
+  { to:2900,  den:0.85, h:[22,75], pal:[30,36,52], glass:true, signs:0.06, trees:0.04 }, // 品川・大崎 オフィスタワー
+  { to:5600,  den:0.75, h:[9,30],  pal:[52,44,40], signs:0.10, trees:0.10, cut:true },   // 五反田・目黒・恵比寿 掘割区間
+  { to:8000,  den:0.95, h:[14,70], pal:[38,34,46], signs:0.32, trees:0.03 },             // 渋谷 繁華街
+  { to:9965,  den:0.45, h:[6,16],  pal:[56,46,38], signs:0.08, trees:0.15, forest:-1 },  // 原宿・代々木 明治神宮の森
+  { to:11900, den:0.9,  h:[18,105],pal:[32,34,50], glass:true, signs:0.35, trees:0.02 }, // 新宿 超高層ビル群
+  { to:15400, den:0.8,  h:[8,28],  pal:[54,46,38], signs:0.18, trees:0.08, barrier:true },             // 高田馬場・目白 学生街
+  { to:19000, den:0.7,  h:[5,15],  pal:[62,52,40], signs:0.06, trees:0.22, barrier:true },             // 大塚・巣鴨・駒込 下町住宅
+  { to:21900, den:0.5,  h:[8,22],  pal:[38,38,42], signs:0.05, trees:0.18, cut:true, forest:1 }, // 田端・日暮里 崖線と谷中の緑
+  { to:24100, den:0.6,  h:[7,20],  pal:[58,48,38], signs:0.12, trees:0.20, forest:1 },   // 鶯谷・上野 上野の山
+  { to:26400, den:1.0,  h:[10,32], pal:[48,36,46], signs:0.45, trees:0.0 },              // 御徒町・秋葉原 電気街
+  { to:29600, den:0.9,  h:[26,85], pal:[30,36,52], glass:true, signs:0.08, trees:0.03, brick:true }, // 神田・東京・有楽町 丸の内
+  { to:34500, den:0.85, h:[18,70], pal:[32,38,50], glass:true, signs:0.10, trees:0.05 }, // 新橋・浜松町・田町 湾岸オフィス
+];
+function districtAt(p) {
+  const lp = loopPos(p);
+  for (const d of DISTRICTS) if (lp < d.to) return d;
+  return DISTRICTS[DISTRICTS.length-1];
+}
+
+// Unmistakable landmarks, world-anchored at their real spot on the loop.
+const LANDMARKS = [
+  { pos:10258, x:60,  type:'docomo'   },  // NTTドコモ代々木ビル (新宿手前・東側)
+  { pos:16132, x:75,  type:'sunshine' },  // サンシャイン60 (池袋→大塚の南側)
+  { pos:30352, x:95,  type:'tower'    },  // 東京タワー (浜松町の西側)
+];
+
+// Landmarks tower well above the streetscape, as in reality — the tallest
+// lineside buildings are ~105 m, so these must clear them decisively.
+function drawTokyoTower(x, z) {
+  const HT = 170;
+  for (let i=0;i<8;i++) {
+    const y1 = HT*i/8, y2 = HT*(i+1)/8;
+    const w1 = 1.8 + 34*Math.pow(1-y1/HT, 1.6), w2 = 1.8 + 34*Math.pow(1-y2/HT, 1.6);
+    const col = i%2 ? haze(z*0.3, 232,226,218) : haze(z*0.3, 208,78,42);
+    quad(CAM.project(x-w1/2, y1, z), CAM.project(x+w1/2, y1, z),
+         CAM.project(x+w2/2, y2, z), CAM.project(x-w2/2, y2, z), col);
+  }
+  const ow = 1.8 + 34*Math.pow(1-78/HT, 1.6) + 3.2;
+  face(x-ow/2, x+ow/2, 74, 82, z, haze(z*0.3, 226,222,214));   // main observatory
+  face(x-0.8, x+0.8, HT, HT+20, z, haze(z*0.3, 208,78,42));    // antenna
+}
+function drawDocomoTower(x, z) {
+  face(x-13, x+13, 0, 75, z, haze(z*0.3, 92, 88, 98));
+  face(x-10, x+10, 75, 100, z, haze(z*0.3, 100, 96, 106));
+  face(x-6.5, x+6.5, 100, 120, z, haze(z*0.3, 108, 104, 114));
+  face(x-1.8, x+1.8, 120, 140, z, haze(z*0.3, 122, 118, 128)); // spire
+}
+function drawSunshine(x, z) {
+  face(x-16, x+16, 0, 100, z, haze(z*0.3, 58, 66, 84));
+  for (let i=0;i<5;i++) face(x-13.4+i*6, x-12.2+i*6, 3, 96, z, haze(z*0.3, 80, 90, 106));
+  face(x-16.5, x+16.5, 97, 100, z, haze(z*0.3, 96, 104, 118));
+}
+function drawLandmarks() {
+  const lp = loopPos(S.train.position);
+  for (const lm of LANDMARKS) {
+    let z = lm.pos - lp;
+    if (z < -TOTAL_LOOP/2) z += TOTAL_LOOP;
+    if (z >  TOTAL_LOOP/2) z -= TOTAL_LOOP;
+    if (z < CAM.NEAR + 4 || z > 1300) continue;
+    if (lm.type==='tower') drawTokyoTower(lm.x, z);
+    else if (lm.type==='docomo') drawDocomoTower(lm.x, z);
+    else drawSunshine(lm.x, z);
+  }
+}
+
+function drawTreeClump(x, z, seed, big) {
+  if (z > 320) return;
+  const h = big ? 8 + hash(seed)*5 : 4.5 + hash(seed)*2.5;
+  const g = CAM.project(x, 0, z), m = CAM.project(x, h*0.45, z);
+  X.fillStyle = haze(z, 52, 40, 30);
+  X.fillRect(g.x - 0.14*g.s, m.y, Math.max(1, 0.28*g.s), g.y - m.y);
+  for (let i=0;i<3;i++) {
+    const c = CAM.project(x + (hash(seed+i*7)-0.5)*(big?5:2.4), h*(0.55 + hash(seed+i*13)*0.3), z);
+    X.beginPath();
+    X.arc(c.x, c.y, Math.max(1.5, (big?2.6:1.6)*(0.8+hash(seed+i*3)*0.5)*c.s), 0, Math.PI*2);
+    X.fillStyle = haze(z, 30+hash(seed+i)*22, 54+hash(seed+i*5)*24, 30+hash(seed+i)*12);
+    X.fill();
+  }
+}
+
+const SIGN_COLS = [[235,84,64],[248,196,44],[72,196,236],[238,238,232],[126,224,120],[236,120,196]];
+function drawSigns(k, bx, bw, bh, z, prof) {
+  if (hash(k+773) < 0.5) {
+    // rooftop billboard
+    const c1 = SIGN_COLS[(hash(k+661)*SIGN_COLS.length)|0];
+    const sw = bw*0.72, sh = 2.6 + hash(k+881)*2.8;
+    const a = CAM.project(bx-sw/2, bh+0.8+sh, z), b = CAM.project(bx+sw/2, bh+0.8, z);
+    X.fillStyle = haze(z, c1[0], c1[1], c1[2]);
+    X.fillRect(a.x, a.y, b.x-a.x, b.y-a.y);
+    X.strokeStyle = haze(z, 246,246,240); X.lineWidth = 1;
+    X.strokeRect(a.x, a.y, b.x-a.x, b.y-a.y);
+  } else {
+    // stacked vertical façade signs (電気街・繁華街の縦看板)
+    const n = prof.signs > 0.3 ? 3 : 1;
+    for (let i=0;i<n;i++) {
+      const c = SIGN_COLS[(hash(k+91*i+661)*SIGN_COLS.length)|0];
+      const yT = bh*(0.88 - i*0.28), yB = yT - bh*0.22;
+      if (yB < 2) break;
+      const a = CAM.project(bx-bw/2+1.0, yT, z), b = CAM.project(bx-bw/2+3.6, yB, z);
+      X.fillStyle = haze(z, c[0], c[1], c[2]);
+      X.fillRect(a.x, a.y, b.x-a.x, b.y-a.y);
+    }
+  }
+}
+
+// Ordinary façades are real materials (tile, render, concrete, brick) tinted
+// toward the district palette; glass-district towers get curtain walls.
+const FACADES = [[184,176,160],[206,202,192],[146,142,136],[158,124,100],[126,130,138],[190,182,168]];
+const GLASS = [50, 64, 82];
+function drawBuilding(k, bx, bw, bh, z, side, prof) {
+  const r1 = hash(k), pal = prof.pal;
+  const glassy = prof.glass && hash(k+9001) > 0.35;
+  const resi = !prof.glass && prof.h[1] <= 22 && hash(k+57) < 0.7;   // マンション: balconies
+  const shops = prof.signs > 0.15;
+  const mat = FACADES[(hash(k+41)*FACADES.length)|0];
+  const col = glassy ? [pal[0]*1.5+r1*20, pal[1]*1.6+r1*16, pal[2]*1.7+r1*20]
+                     : mat.map((c,i) => c*0.62 + pal[i]*0.55 + (r1-0.5)*18);
+  const FL = resi ? 2.9 : 3.6;                     // storey height
+  const bd = 8 + hash(k+313)*14, kf = lit('f'), ks = lit(side>0 ? 'l' : 'r');
+  const xn = bx - side*bw/2;                       // the corner nearest the track
+  const tint = (z, c, f) => haze(z, c[0]*f, c[1]*f, c[2]*f);
+  // rooftop machine room / water tank, set back behind the parapet
+  if (bh > 10 && hash(k+77) < 0.75) {
+    const pw = bw*(0.22 + hash(k+78)*0.2), px = bx + (hash(k+79)-0.5)*bw*0.4, zr = z + bd*0.45;
+    face(px-pw/2, px+pw/2, bh, bh + 2.6 + hash(k+80)*2.2, zr, tint(zr, col, kf*0.92));
+    if (bh > 40 && hash(k+81) < 0.5) face(px-0.12, px+0.12, bh, bh + 9, zr, haze(zr, 70, 72, 76));   // antenna mast
+  }
+  // the flank facing the track, drawn first so the front face overlaps it
+  wall(xn, 0, bh, z, z+bd, tint(z+bd/2, glassy ? GLASS : col, ks));
+  const fs = CAM.project(xn, 0, z+bd/2).s;
+  if (z < 170 && FL*fs > 4)
+    for (let y = FL; y < bh-1.2; y += FL)
+      if (glassy) wall(xn, y-0.18, y+0.18, z, z+bd, tint(z+bd/2, col, ks));          // floor slabs
+      else wall(xn, y+0.9, y+2.3, z+0.7, z+bd-0.7, tint(z+bd/2, GLASS, 0.75+0.25*ks)); // windows
+  // front face — square to the track, so it is a plain screen rect
+  const p1 = CAM.project(bx - bw/2, bh, z), p2 = CAM.project(bx + bw/2, 0, z);
+  const w = p2.x-p1.x, h = p2.y-p1.y, s = p2.s;
+  if (h < 1 || w < 1) return;
+  const sy = y => p2.y - y*s;                      // height (m) -> screen y on this face
+  X.fillStyle = tint(z, col, kf); X.fillRect(p1.x, p1.y, w, h);
+  if (FL*s >= 3) {
+    const gl = tint(z, GLASS, 0.8 + 0.2*kf);
+    if (glassy) {
+      const g = X.createLinearGradient(0, p1.y, 0, p2.y);   // sky reflected high, street dark low
+      g.addColorStop(0, haze(z, 118, 146, 176)); g.addColorStop(1, haze(z, 44, 58, 76));
+      X.fillStyle = g; X.fillRect(p1.x + 0.3*s, p1.y + 0.6*s, w - 0.6*s, h - 0.6*s);
+      X.fillStyle = tint(z, col, kf);
+      for (let y = FL; y < bh; y += FL) X.fillRect(p1.x, sy(y) - 0.2*s, w, Math.max(1, 0.4*s));
+      if (1.5*s >= 4) for (let x = 1.5; x < bw; x += 1.5) X.fillRect(p1.x + x*s, p1.y, Math.max(1, 0.1*s), h);
+    } else {
+      for (let y = FL; y < bh - 1.2; y += FL) {
+        X.fillStyle = gl;                              // window band of this storey
+        X.fillRect(p1.x + 0.6*s, sy(y + 2.4), w - 1.2*s, 1.5*s);
+        if (resi) {                                    // balcony parapet in front of it
+          X.fillStyle = haze(z, 214*kf, 212*kf, 204*kf);
+          X.fillRect(p1.x + 0.3*s, sy(y + 1.05), w - 0.6*s, 1.05*s);
+        }
+      }
+      if (!resi && 1.8*s >= 5) {                       // mullions between the panes
+        X.fillStyle = tint(z, col, kf);
+        for (let x = 1.8; x < bw - 0.6; x += 1.8) X.fillRect(p1.x + x*s, p1.y, Math.max(1, 0.14*s), h - 3.6*s);
+      }
+    }
+    if (ENV.time !== 'day') {      // lights on behind some of the panes
+      const on = ENV.night ? 0.42 : 0.16, cw = glassy ? 1.5 : 1.8;
+      for (let y = FL, row = 0; y < bh - 1.2; y += FL, row++)
+        for (let x = 0.5, c = 0; x < bw - 1.0; x += cw, c++) {
+          const r = hash(k*131 + row*17 + c*7);
+          if (r > on) continue;
+          X.fillStyle = glow(z, 255, 226 - r*90, 170 - r*160);
+          X.fillRect(p1.x + x*s, sy(y + (glassy ? 2.9 : 2.35)), (cw - 0.4)*s, (glassy ? 2.2 : 1.4)*s);
+        }
+    }
+    // street level: shopfronts with an awning, or a dark lobby
+    X.fillStyle = ENV.night && shops ? glow(z, 150, 128, 96) : haze(z, 34, 38, 44);
+    X.fillRect(p1.x + 0.5*s, sy(2.9), w - 1.0*s, 2.9*s);
+    if (shops && !glassy) {
+      const c = SIGN_COLS[(hash(k+19)*SIGN_COLS.length)|0];
+      X.fillStyle = haze(z, c[0]*kf, c[1]*kf, c[2]*kf);
+      X.fillRect(p1.x + 0.3*s, sy(3.4), w - 0.6*s, 0.5*s);
+    }
+  }
+  X.fillStyle = tint(z, col, kf*1.12);                 // parapet coping catches the light
+  X.fillRect(p1.x, p1.y, w, Math.max(1, 0.45*s));
+  if (z < 240 && w > 12 && hash(k+551) < prof.signs) {
+    LAMP = ENV.time !== 'day';                         // billboards are lit after dark
+    drawSigns(k, bx, bw, bh, z, prof);
+    LAMP = false;
+  }
+}
+
+// 電柱 along the side roads: concrete poles every POLE_SP m with power and
+// telecom lines strung between them, standing just outside the lineside walls.
+const POLE_SP = 30, POLE_H = 11.5;
+function drawPole(x, z, k, prof) {
+  const kf = lit('f'), base = CAM.project(x, 0, z);
+  if (base.s < 0.6) return;
+  const col = haze(z, 158*kf, 156*kf, 150*kf), dark = haze(z, 60, 62, 66);
+  quad(CAM.project(x-0.2, 0, z), CAM.project(x+0.2, 0, z),
+       CAM.project(x+0.1, POLE_H, z), CAM.project(x-0.1, POLE_H, z), col);
+  face(x-1.1, x+1.1, POLE_H-0.75, POLE_H-0.62, z, dark);          // crossarms
+  face(x-0.8, x+0.8, POLE_H-1.9, POLE_H-1.78, z, dark);
+  if (hash(k) < 0.35) face(x-0.32, x+0.32, POLE_H-3.6, POLE_H-2.5, z, haze(z, 120, 124, 128));   // transformer
+  // lines on to the next pole further along
+  const z2 = z + POLE_SP, wc = haze(z+15, 34, 36, 40);
+  for (const dx of [-1.0, 0, 1.0]) wire(x+dx, x+dx, POLE_H-0.62, 0.45, z, z2, 0.02, wc);
+  for (const dx of [-0.7, 0.7]) wire(x+dx, x+dx, POLE_H-1.78, 0.5, z, z2, 0.02, wc);
+  wire(x, x, 6.2, 0.7, z, z2, 0.05, haze(z+15, 22, 22, 24));      // telecom cable, thick and low
+}
+
+// 跨線橋 — road bridges over the line, world-anchored between stations
+const BRIDGES = [1000, 4850, 7800, 11250, 13727, 17750, 19841, 21586, 23540, 25189, 31639];
+const BR_Y = 8.3, BR_D = 11;   // soffit height above rail, deck width along the track
+function drawBridge(z) {
+  if (z + BR_D < CAM.NEAR) return;
+  const kf = lit('f'), z1 = Math.max(z, 1.0), z2 = z + BR_D;
+  for (const [x1, x2] of [[-16.5, -13.6], [13.6, 16.5]]) {        // abutments beyond the walls
+    const xn = x1 < 0 ? x2 : x1;
+    wall(xn, 0, BR_Y, Math.max(z1, z+1), z2-1, haze(z, 120, 118, 112));
+    if (z+1 > CAM.NEAR) face(x1, x2, 0, BR_Y, z+1, haze(z, 150*kf, 148*kf, 140*kf));
+  }
+  slab(-60, 60, BR_Y, z1, z2, haze(z, 62, 64, 66));                // soffit, always in shade
+  if (z < CAM.NEAR) return;
+  face(-60, 60, BR_Y, BR_Y+1.4, z, haze(z, 164*kf, 162*kf, 156*kf));          // edge girder
+  face(-60, 60, BR_Y+0.05, BR_Y+0.22, z-0.02, haze(z, 128, 126, 120));         // drip line
+  face(-60, 60, BR_Y+1.4, BR_Y+2.3, z+0.15, haze(z, 186*kf, 184*kf, 178*kf));  // parapet
+  X.globalAlpha = 0.28;                                                         // 投物防止柵
+  face(-60, 60, BR_Y+2.3, BR_Y+4.2, z+0.25, haze(z, 70, 76, 80));
+  X.globalAlpha = 1;
+  const p = CAM.project(0, 0, z);
+  if (2.5*p.s > 4) for (let x = -60; x <= 60; x += 2.5)
+    face(x-0.05, x+0.05, BR_Y+2.3, BR_Y+4.2, z+0.25, haze(z, 70, 74, 78));
+  face(-60, 60, BR_Y+4.1, BR_Y+4.2, z+0.25, haze(z, 70, 74, 78));
+}
+
+function drawCity() {
+  const scroll = S.train.position;
+  drawLandmarks();   // farthest first — city rows draw over them where they overlap
+  const SP = 26;
+  const start = Math.floor((scroll+FAR)/SP)*SP;
+  for (let d = start; d > scroll - SP; d -= SP) {   // far -> near
+    const z = d - scroll;
+    const prof = districtAt(d);
+    for (let side = -1; side <= 1; side += 2) {
+      const dl = loopPos(d);
+      if (side === YARD_SIDE && dl > YARD[0] && dl < YARD[1]) continue;  // open sky over the rail yard
+      if (z <= 22) continue;                         // too close to see past the walls
+      const k = (d/SP|0)*2 + (side>0?1:0);
+      const r1 = hash(k), r2 = hash(k+9001), r3 = hash(k+7717);
+      if (prof.forest === side) {                    // 明治神宮・上野の山・谷中の緑の壁
+        drawTreeClump(side*(15 + r1*7), z, k*13, true);
+        drawTreeClump(side*(22 + r2*9), z, k*29, true);
+        continue;
+      }
+      if (hash(k+31) < prof.trees) { drawTreeClump(side*(16 + r1*9), z, k*17, false); continue; }
+      if (r3 < 1 - prof.den) continue;               // gaps in the streetscape
+      const bh = prof.h[0] + r2*(prof.h[1]-prof.h[0]);
+      const bw = 10 + r3*22;
+      const bx = side*(25 + r1*50);
+      drawBuilding(k, bx, bw, bh, z, side, prof);
+    }
+    // poles and bridges in this slice, in front of its buildings
+    for (let pd = Math.floor(d/POLE_SP)*POLE_SP; pd > d - SP; pd -= POLE_SP) {
+      const pz = pd - scroll, pp = districtAt(pd), pl = loopPos(pd);
+      if (pz < CAM.NEAR || pz > 330 || pp.brick) continue;
+      for (let side = -1; side <= 1; side += 2) {
+        if (pp.forest === side || (side === YARD_SIDE && pl > YARD[0] && pl < YARD[1])) continue;
+        drawPole(side*15.6, pz, pd/POLE_SP*2 + side, pp);
+      }
+    }
+    for (const bp of BRIDGES) {
+      let bz = bp - loopPos(d) + z;                  // the loop wraps: compare by loop position
+      if (bz > TOTAL_LOOP/2) bz -= TOTAL_LOOP;
+      if (bz <= z && bz > z - SP) drawBridge(bz);
+    }
+  }
+}
+
+// ============================================================
+// SCENE: TRACK  (shared ballast, two tracks — Yamanote is double)
+// ============================================================
+const ZSEG = [7, 10, 14, 19, 27, 40, 60, 92, 130, 175, 230, 290, 350, FAR];
+// Japan runs on the left: the opposite-direction track lies to our RIGHT, and
+// our platforms, signals and lineside signs stand on the LEFT.
+const OPP_X = 3.8;
+
+function drawBallast() {
+  const scroll = S.train.position;
+  const kt = lit('t');
+  for (let i=ZSEG.length-2;i>=0;i--) {   // far -> near: troughs and walls stand above the ballast
+    const zm = (ZSEG[i]+ZSEG[i+1])/2;
+    const prof = districtAt(scroll + zm);
+    slab(-3.6, 7.2, -0.30, ZSEG[i], ZSEG[i+1], haze(zm, 100*kt, 97*kt, 92*kt));   // crushed-stone ballast
+    for (const ox of [0, OPP_X])                                                     // rust-stained bed under each track
+      slab(ox-1.05, ox+1.05, -0.29, ZSEG[i], ZSEG[i+1], haze(zm, 98*kt, 84*kt, 72*kt));
+    slab(6.4, 7.2, -0.05, ZSEG[i], ZSEG[i+1], haze(zm, 58, 60, 52));    // cess edge
+    // concrete cable troughs (トラフ) along both sides
+    for (const tx of [-2.45, 6.35]) {
+      wall(tx, -0.30, 0.06, ZSEG[i], ZSEG[i+1], haze(zm, 104, 102, 96));
+      slab(tx-0.42, tx, 0.06, ZSEG[i], ZSEG[i+1], haze(zm, 150*kt, 148*kt, 140*kt));
+    }
+    // lineside wall — retaining wall, cutting wall, or 赤レンガ高架橋 by district
+    for (let side=-1; side<=1; side+=2) {
+      const wl = loopPos(scroll + zm);
+      if (side === YARD_SIDE && wl > YARD[0] && wl < YARD[1]) continue;   // yard is open, no wall
+      const kw = lit(side < 0 ? 'r' : 'l'), wh = prof.brick ? 3.6 : prof.cut ? 4.4 : 2.05;
+      if (side*SUN.x > 0) {                  // sun behind this wall: it shades the ground toward the track
+        const sw = Math.min(9, (wh+0.3)*Math.abs(SUN.x)/SUN.y);
+        shadow(side*13.0, side*(13.0-sw), -0.29, ZSEG[i], ZSEG[i+1], 0.30);
+      }
+      if (prof.brick) {
+        wall(side*13.0, -0.3, 3.6, ZSEG[i], ZSEG[i+1], haze(zm, 118*kw, 62*kw, 44*kw));
+        slab(side*12.8, side*13.2, 3.6, ZSEG[i], ZSEG[i+1], haze(zm, 172, 152, 132));
+        // arch openings every 11 m (ガード下)
+        if (zm < 210) for (let d = Math.ceil((scroll+ZSEG[i]+1.9)/11)*11; d-scroll+1.9 < ZSEG[i+1]; d += 11) {
+          const az = d - scroll;
+          if (az - 1.9 < ZSEG[i]) continue;
+          wall(side*12.95, 0, 1.9, az-1.9, az+1.9, haze(az, 42, 28, 24));
+          const a = CAM.project(side*12.95, 1.9, az-1.9), b = CAM.project(side*12.95, 1.9, az+1.9);
+          X.beginPath();
+          X.ellipse((a.x+b.x)/2, (a.y+b.y)/2, Math.abs(b.x-a.x)/2, 1.15*(a.s+b.s)/2, 0, Math.PI, 0);
+          X.fillStyle = haze(az, 42, 28, 24); X.fill();
+        }
+      } else {
+        // shrubs along the far side of the wall, in leafier districts
+        if (prof.trees >= 0.08 && prof.forest !== side)
+          for (let d = Math.floor((scroll+ZSEG[i])/15)*15; d < scroll+ZSEG[i+1]; d += 15) {
+            const hr = hash(d*7 + side);
+            if (hr > prof.trees*3) continue;
+            const za = Math.max(ZSEG[i], d-scroll), zb = Math.min(ZSEG[i+1], d+15-scroll), hh = wh + 0.7 + hr*1.6;
+            wall(side*13.7, wh, hh, za, zb, haze(zm, 46*kw, 70*kw, 42*kw));
+            if (zm < 120) for (let t = 0; t < 3; t++) {
+              const zc = d - scroll + 2.5 + t*5;
+              if (zc < za || zc > zb) continue;
+              const c = CAM.project(side*13.7, hh, zc);
+              X.fillStyle = haze(zc, (52+t*6)*kw, (80+t*5)*kw, 46*kw);
+              X.beginPath(); X.ellipse(c.x, c.y, 1.9*c.s, 0.6*c.s, 0, 0, Math.PI*2); X.fill();
+            }
+          }
+        // cuttings wall the line in (目黒・田端あたり) — wh is 4.4 there
+        wall(side*13.0, -0.3, wh, ZSEG[i], ZSEG[i+1], haze(zm, 86*kw, 84*kw, 80*kw));
+        slab(side*12.8, side*13.2, wh, ZSEG[i], ZSEG[i+1], haze(zm, 96, 94, 90));
+        // on top: 防音壁 in residential stretches, otherwise a chain-link fence
+        const near = zm < 200, step = prof.barrier ? 2 : 2.5;
+        if (prof.barrier) {
+          wall(side*13.0, wh, wh+1.25, ZSEG[i], ZSEG[i+1], haze(zm, 176*kw, 174*kw, 166*kw));
+          X.globalAlpha = 0.35;
+          wall(side*13.0, wh+1.25, wh+2.05, ZSEG[i], ZSEG[i+1], haze(zm, 120, 150, 170));
+          X.globalAlpha = 1;
+        } else {
+          X.globalAlpha = 0.22;
+          wall(side*13.0, wh, wh+1.6, ZSEG[i], ZSEG[i+1], haze(zm, 60, 66, 70));
+          X.globalAlpha = 1;
+          wall(side*13.0, wh+1.55, wh+1.62, ZSEG[i], ZSEG[i+1], haze(zm, 90, 96, 100));
+        }
+        if (near) for (let d = Math.ceil((scroll+ZSEG[i])/step)*step; d < scroll+ZSEG[i+1]; d += step) {
+          const zp = d - scroll;
+          wall(side*12.98, wh, wh + (prof.barrier ? 2.05 : 1.62), zp-0.05, zp+0.05,
+               prof.barrier ? haze(zp, 96, 100, 104) : haze(zp, 82, 88, 92));
+        }
+      }
+    }
+  }
+}
+
+// At speed the eye smears the ballast into streaks along the line of travel.
+// World-anchored stones on a random (not periodic) grid, so they never strobe;
+// each is stretched with speed and fades in above ~35 km/h.
+function drawSpeedStreaks() {
+  const v = S.train.speed/3.6, a = Math.min(1, Math.max(0, (S.train.speed - 35)/45));
+  if (a <= 0) return;
+  const scroll = S.train.position, len = 0.2 + v*0.12, kt = lit('t');
+  const lanes = [6.6, 5.9, 4.95, 2.85, 1.9, 1.15, -1.15, -1.9, -2.25];   // clear of the rail heads
+  for (let d = Math.floor((scroll+60)/1.5)*1.5; d - scroll > CAM.NEAR - len; d -= 1.5) {   // far -> near
+    const n = Math.round(d/1.5);
+    for (let i = 0; i < lanes.length; i++) {
+      const h = hash(n*31 + i*7);
+      if (h > 0.45) continue;
+      const z = d - scroll + hash(n*13 + i)*1.5, x = lanes[i] + (hash(n*5 + i*3) - 0.5)*0.5;
+      const z1 = Math.max(CAM.NEAR, z), z2 = z + len;
+      if (z2 <= z1) continue;
+      const c = h < 0.2 ? 160 : 62, w = 0.03 + h*0.08;
+      X.globalAlpha = a*(0.5 - z/150);
+      slab(x - w, x + w, -0.25, z1, z2, haze(z, c*kt, (c-4)*kt, (c-10)*kt));
+    }
+  }
+  X.globalAlpha = 1;
+}
+
+// bridge shadows land on the ballast; drawn after it, before the rails
+function drawBridgeShadows() {
+  if (!ENV.sunOn) return;
+  const lp = loopPos(S.train.position), dz = -(BR_Y+1.4)*SUN.z/SUN.y;
+  for (const bp of BRIDGES) {
+    let z = bp - lp;
+    if (z < -TOTAL_LOOP/2) z += TOTAL_LOOP;
+    const z1 = Math.max(CAM.NEAR, z + dz), z2 = z + BR_D + dz;
+    if (z2 > z1 && z1 < FAR) shadow(-13, 13, -0.27, z1, z2, 0.38);
+  }
+}
+
+function drawRails(ox, limit, dim) {
+  const scroll = S.train.position;
+  const SP = 0.62, kt = lit('t'), kd = dim ? 0.85 : 1;
+  // Motion blur: smear each sleeper over the distance travelled this frame.
+  // Without it a 0.62 m pattern strobes (wagon-wheel effect): past ~67 km/h at
+  // 60 fps the sleepers seem to slow down or even roll backwards.
+  const bl = Math.min(SP*1.5, S.train.speed/3.6*FRAME_DT), sa = 0.24/(0.24 + bl);
+  // PC (concrete) sleepers, with stone texture in the cribs and fasteners up close
+  for (let d = Math.floor((scroll+limit)/SP)*SP; d - scroll > CAM.NEAR; d -= SP) {   // far -> near
+    const z = d - scroll, n = Math.round(d/SP), v = hash(n*3 + (dim?1:0))*14;
+    X.globalAlpha = sa;
+    slab(ox-1.0, ox+1.0, -0.02, z-0.12-bl/2, z+0.12+bl/2, haze(z, (128+v)*kt*kd, (126+v)*kt*kd, (120+v)*kt*kd));
+    X.globalAlpha = 1;
+    if (z < 40 && bl < 0.1) {
+      face(ox-1.0, ox+1.0, -0.12, -0.02, z-0.12, haze(z, 92*kd, 90*kd, 86*kd));   // front edge, in shade
+      for (const rx of [ox-GAUGE, ox+GAUGE])                                      // clips either side of the rail
+        for (const cx of [rx-0.09, rx+0.09])
+          slab(cx-0.045, cx+0.045, 0.0, z-0.05, z+0.05, haze(z, 38, 40, 42));
+    }
+    if (z < 30 && bl < 0.25) for (let j=0;j<6;j++) {                              // ballast stones in the crib
+      const h = hash(n*61 + j*7 + (dim?3:0));
+      const sx = ox + (h-0.5)*2.4, sz = z + 0.17 + hash(n*17 + j)*0.28;
+      const c = h > 0.5 ? 126 : 70;
+      slab(sx-0.05, sx+0.05, -0.24, sz-0.03, sz+0.03, haze(sz, c*kt, (c-4)*kt, (c-10)*kt));
+    }
+  }
+  // rails: rust-brown web and foot, a polished running band on the head
+  const shine = 196 + 52*Math.max(0, SUN.z);   // the band glints when running toward the sun
+  for (let side=-1; side<=1; side+=2) {
+    const rx = ox + side*GAUGE;
+    for (let i=0;i<ZSEG.length-1;i++) {
+      if (ZSEG[i] > limit) break;
+      const a = ZSEG[i], b = Math.min(ZSEG[i+1], limit), zm = (a+b)/2;
+      slab(rx-0.07, rx+0.07, -0.015, a, b, haze(zm, 84*kd, 62*kd, 48*kd));          // foot
+      quad(CAM.project(rx-0.036,0.00,a), CAM.project(rx+0.036,0.00,a),
+           CAM.project(rx+0.036,0.00,b), CAM.project(rx-0.036,0.00,b),
+           haze(zm, 112*kd, 92*kd, 78*kd));                                          // web
+      quad(CAM.project(rx-0.016,0.03,a), CAM.project(rx+0.016,0.03,a),
+           CAM.project(rx+0.016,0.03,b), CAM.project(rx-0.016,0.03,b),
+           haze(zm, shine*kd, (shine+3)*kd, (shine+8)*kd));                          // head
+    }
+    // rail joints — fishplates and the gap, at the same spots CABMOTION knocks
+    for (let d = Math.ceil((scroll+CAM.NEAR)/RAIL_LEN)*RAIL_LEN; d - scroll < Math.min(limit, 110); d += RAIL_LEN) {
+      const z = d - scroll;
+      wall(rx - side*0.04, -0.01, 0.022, z-0.4, z+0.4, haze(z, 48, 44, 40));
+      slab(rx-0.017, rx+0.017, 0.031, z-0.012, z+0.012, haze(z, 30, 30, 32));
+    }
+  }
+}
+
+// ============================================================
+// SCENE: CATENARY
+// 門型ビーム every SPAN m: two masts and a lattice beam across both tracks.
+// Each track hangs a simple catenary from drop brackets — the messenger sags
+// between supports, droppers hold the contact wire level, and the contact
+// wire zig-zags ±STAGGER so it wears the pantograph evenly. Feeders run
+// along the mast tops.
+// ============================================================
+const SPAN = 50, MAST_H = 7.9, BEAM_Y = 7.15, MESS_Y = 6.15, CONT_Y = 5.1;
+const SAG = 0.42, STAGGER = 0.2, MASTS = [-3.4, 7.0], TRACKS = [0, OPP_X];
+const BEAM_L = MASTS[0], BEAM_R = MASTS[1];
+
+// a screen-space line between two world points, width in metres
+function wline(x1, y1, z1, x2, y2, z2, wm, col) {
+  const a = CAM.project(x1, y1, z1), b = CAM.project(x2, y2, z2);
+  X.strokeStyle = col; X.lineWidth = Math.max(0.7, wm*(a.s+b.s)/2);
+  X.beginPath(); X.moveTo(a.x, a.y); X.lineTo(b.x, b.y); X.stroke();
+}
+// a wire hanging between two supports: lateral x1->x2, height y at each end, sagging by sag
+function wire(x1, x2, y, sag, z1, z2, wm, col) {
+  if (z2 < 2.5 || z1 > FAR) return;
+  const n = z1 < 60 ? 10 : 4;
+  X.strokeStyle = col; X.beginPath();
+  let first = true, sMax = 0;
+  for (let i=0;i<=n;i++) {
+    const t = i/n, z = z1 + (z2-z1)*t;
+    if (z < 2.5) continue;
+    const p = CAM.project(x1 + (x2-x1)*t, y - sag*4*t*(1-t), z);
+    first ? X.moveTo(p.x, p.y) : X.lineTo(p.x, p.y); first = false;
+    sMax = Math.max(sMax, p.s);
+  }
+  X.lineWidth = Math.max(0.7, Math.min(wm*sMax, 3)); X.stroke();
+}
+
+function drawCatenary() {
+  const scroll = S.train.position;
+  // mast and beam shadows across the track, cast from the world-fixed sun
+  const sx = -SUN.x/SUN.y, sz = -SUN.z/SUN.y;   // ground offset per metre of height
+  if (ENV.sunOn) for (let d = Math.floor((scroll+160)/SPAN)*SPAN; d > scroll; d -= SPAN) {
+    const z = d - scroll, zt = z + MAST_H*sz, zb = z + BEAM_Y*sz;
+    if (Math.min(z, zt, zb) < CAM.NEAR - 3) continue;
+    const sh = '#0b0d12', w = 0.17;
+    X.globalAlpha = 0.28;
+    for (const px of MASTS)
+      quad(CAM.project(px-w,-0.02,z), CAM.project(px+w,-0.02,z),
+           CAM.project(px+MAST_H*sx+w,-0.02,zt), CAM.project(px+MAST_H*sx-w,-0.02,zt), sh);
+    quad(CAM.project(BEAM_L+BEAM_Y*sx,-0.02,zb-0.25), CAM.project(BEAM_R+BEAM_Y*sx,-0.02,zb-0.25),
+         CAM.project(BEAM_R+BEAM_Y*sx,-0.02,zb+0.25), CAM.project(BEAM_L+BEAM_Y*sx,-0.02,zb+0.25), sh);
+    X.globalAlpha = 1;
+  }
+  const kf = lit('f'), first = Math.floor((scroll+FAR)/SPAN)*SPAN;
+  // each span is a display-list item keyed at its portal, so trains sort against it
+  for (let d = first; d > scroll - SPAN; d -= SPAN) {       // far -> near
+    const z = d - scroll, z2 = z + SPAN, i = Math.round(d/SPAN);
+    DL.push({z: z, pr: 0, f: () => {
+    X.lineCap = 'round';
+    const st1 = (i%2 ? 1 : -1)*STAGGER, st2 = -st1;
+    // the span beyond this support: feeders, then each track's catenary
+    for (const fx of [-3.75, 7.35]) wire(fx, fx, MAST_H+0.35, 0.9, z, z2, 0.035, haze(z+SPAN/2, 46, 48, 52));
+    wire(-3.75, -3.75, MAST_H-0.6, 0.7, z, z2, 0.018, haze(z+SPAN/2, 62, 64, 68));     // 配電線
+    for (const ox of TRACKS) {
+      wire(ox+st1, ox+st2, MESS_Y, SAG, z, z2, 0.016, haze(z+SPAN/2, 70, 72, 76));   // messenger
+      wire(ox+st1, ox+st2, CONT_Y, 0, z, z2, 0.02, haze(z+SPAN/2, 92, 78, 58));      // contact (copper)
+      if (z < 140) for (let t = 0.1; t < 0.95; t += 0.1) {                           // droppers
+        const zd = z + SPAN*t;
+        if (zd < 3) continue;
+        const xd = ox + st1 + (st2-st1)*t;
+        wline(xd, CONT_Y, zd, xd, MESS_Y - SAG*4*t*(1-t), zd, 0.008, haze(zd, 84, 86, 90));
+      }
+    }
+    if (z < CAM.NEAR) { X.lineCap = 'butt'; return; }
+    // the portal itself
+    const mc = haze(z, 104*kf, 108*kf, 112*kf), ms = haze(z, 70, 74, 78);
+    // at a platform our-side mast rises through the canopy: seen from below,
+    // the canopy hides it from the roof up to where the sightline clears the fascia
+    const plat = STATIONS.some(st => { let g = loopPos(d) - st.pos;
+      if (g < -TOTAL_LOOP/2) g += TOTAL_LOOP; if (g > TOTAL_LOOP/2) g -= TOTAL_LOOP;
+      return g > -PLAT_LEN && g < 26; });
+    for (const mx of MASTS) {
+      const parts = plat && mx === BEAM_L ? [[0, 4.55], [5.8, MAST_H]] : [[0, MAST_H]];
+      for (const [y1, y2] of parts) {
+        wall(mx - Math.sign(mx)*0.17, y1, y2, z-0.17, z+0.17, ms);   // side toward the track
+        face(mx-0.17, mx+0.17, y1, y2, z-0.17, mc);
+      }
+    }
+    face(BEAM_L, BEAM_R, MAST_H-0.22, MAST_H, z-0.2, mc);              // top chord
+    face(BEAM_L, BEAM_R, BEAM_Y, BEAM_Y+0.16, z-0.2, mc);               // bottom chord
+    if (CAM.project(0, 0, z).s > 6) {                                     // lattice web
+      X.strokeStyle = mc; X.lineWidth = Math.max(0.8, 0.05*CAM.project(0,0,z).s);
+      X.beginPath();
+      for (let x = BEAM_L, up = 0; x <= BEAM_R; x += 0.75, up ^= 1) {
+        const p = CAM.project(x, up ? MAST_H-0.22 : BEAM_Y+0.16, z-0.2);
+        x === BEAM_L ? X.moveTo(p.x, p.y) : X.lineTo(p.x, p.y);
+      }
+      X.stroke();
+    }
+    // drop brackets: pipe from the beam, insulators, a stay to the messenger
+    // and a registration arm out to the (staggered) contact wire
+    for (const ox of TRACKS) {
+      const px = ox + (ox === 0 ? -1.15 : 1.15), cx = ox + st1;   // bracket hangs toward its mast
+      const pc = haze(z, 86, 90, 94);
+      wline(px, BEAM_Y, z, px, CONT_Y-0.15, z, 0.06, pc);
+      wline(px, MESS_Y+0.05, z, cx, MESS_Y, z, 0.045, pc);
+      wline(px, CONT_Y+0.25, z, cx, CONT_Y, z, 0.035, pc);
+      for (const [y, x2] of [[MESS_Y+0.05, cx], [CONT_Y+0.25, cx]]) {   // brown porcelain insulators
+        const xi = px + (x2-px)*0.25;
+        wline(px + (x2-px)*0.08, y, z, xi, y, z, 0.11, haze(z, 132, 74, 48));
+      }
+    }
+    X.lineCap = 'butt';
+    }});
+  }
+}
+
+// ============================================================
+// SCENE: LINESIDE SIGNS & SIGNALS  (anchored to the world, not the train)
+// ============================================================
+function drawSpeedSign(z, lim) {
+  const base = CAM.project(-2.55, 0, z), top = CAM.project(-2.55, 2.15, z);
+  const s = base.s;
+  X.fillStyle = haze(z, 92, 94, 98);
+  X.fillRect(base.x - 0.05*s, top.y, Math.max(1, 0.10*s), base.y-top.y);
+  const c = CAM.project(-2.55, 2.6, z), r = Math.max(2, 0.44*s);
+  X.beginPath(); X.arc(c.x, c.y, r, 0, Math.PI*2);
+  X.fillStyle = haze(z, 236,236,230); X.fill();
+  X.lineWidth = Math.max(1, r*0.17); X.strokeStyle = haze(z, 186,44,44); X.stroke();
+  if (r > 7) {
+    X.textBaseline = 'middle';
+    text(lim, c.x, c.y, `bold ${Math.floor(r*1.05)}px monospace`, '#1a1a1a', 'center');
+    X.textBaseline = 'alphabetic';
+  }
+}
+
+function drawSignal(z, aspect) {
+  const base = CAM.project(-3.05, 0, z), s = base.s;
+  const mastTop = CAM.project(-3.05, 4.6, z);
+  X.fillStyle = haze(z, 70, 72, 76);
+  X.fillRect(base.x - 0.06*s, mastTop.y, Math.max(1, 0.12*s), base.y-mastTop.y);
+  const head = CAM.project(-3.05, 5.35, z);
+  const hw = Math.max(3, 0.62*s), hh = Math.max(5, 1.55*s);
+  X.fillStyle = haze(z, 34, 36, 38);
+  rrect(head.x-hw/2, head.y-hh/2, hw, hh, Math.min(4, hw*0.3)); X.fill();
+  const lampR = Math.max(1.2, hw*0.28);
+  const slots = ['#3a1010','#3a3410','#103a18'];
+  const onIdx = aspect==='#ff3b30' ? 0 : aspect==='#ffcc00' ? 1 : 2;
+  for (let i=0;i<3;i++) {
+    const ly = head.y - hh*0.3 + i*hh*0.3;
+    X.beginPath(); X.arc(head.x, ly, lampR, 0, Math.PI*2);
+    X.fillStyle = i===onIdx ? aspect : slots[i]; X.fill();
+    if (i===onIdx && lampR > 1.5) {
+      X.globalAlpha = 0.28; X.beginPath();
+      X.arc(head.x, ly, lampR*2.6, 0, Math.PI*2); X.fillStyle = aspect; X.fill();
+      X.globalAlpha = 1;
+    }
+  }
+}
+
+// 勾配標: a short post at each change of gradient; its arm points up or down
+// the slope that begins there, with the ‰ figure on it (L = level).
+function drawGradePost(z, g) {
+  const base = CAM.project(-2.35, 0, z), top = CAM.project(-2.35, 1.15, z), s = base.s;
+  if (s < 1.5) return;
+  X.fillStyle = haze(z, 226, 226, 220);
+  X.fillRect(base.x - 0.05*s, top.y, Math.max(1, 0.10*s), base.y - top.y);
+  const tilt = g === 0 ? 0 : (g > 0 ? -1 : 1)*0.22*s;      // arm rises on a climb
+  X.strokeStyle = haze(z, 236, 236, 230); X.lineWidth = Math.max(1, 0.12*s); X.lineCap = 'butt';
+  X.beginPath(); X.moveTo(top.x, top.y + 0.1*s); X.lineTo(top.x + 0.7*s, top.y + 0.1*s + tilt); X.stroke();
+  if (s > 18) {
+    X.textBaseline = 'middle';
+    text(g === 0 ? 'L' : String(Math.abs(g)), top.x + 0.42*s, top.y - 0.16*s + tilt*0.6,
+         `bold ${Math.floor(0.24*s)}px monospace`, haze(z, 30, 30, 34), 'center');
+    X.textBaseline = 'alphabetic';
+  }
+}
+
+function drawLineside() {
+  const lp = loopPos(S.train.position);
+  const dist = distanceToNextStation(S.train.position);
+  const aspect = dist < 250 ? '#ff3b30' : dist < 700 ? '#ffcc00' : '#34c759';
+  const items = [];
+  for (const st of STATIONS) {
+    // home signal 520 m out — but on short sections (日暮里 is 500 m) keep it
+    // clear of the previous platform, just past its end
+    const prev = STATIONS[(st.id + STATIONS.length - 1) % STATIONS.length];
+    const sec = (st.pos - prev.pos + TOTAL_LOOP) % TOTAL_LOOP;
+    let gp = st.pos - Math.min(520, sec - 60); if (gp < 0) gp += TOTAL_LOOP;
+    let gz = gp - lp;      if (gz < 0)  gz += TOTAL_LOOP;
+    if (gz > CAM.NEAR && gz < 300) items.push({z:gz, sig:true});
+  }
+  for (const c of CURVES) {
+    const l = curveLimitOf(c[2]);
+    if (l >= 90) continue;
+    for (const pk of [[c[0], l], [c[1], 90]]) {   // entrance board, then 解除
+      let z = pk[0] - lp; if (z < 0) z += TOTAL_LOOP;
+      if (z > CAM.NEAR && z < 300) items.push({z:z, lim:pk[1]});
+    }
+  }
+  for (let i = 0; i < PROFILE.length - 1; i++) {
+    let z = PROFILE[i][0] - lp; if (z < 0) z += TOTAL_LOOP;
+    const g = Math.round((PROFILE[i+1][1]-PROFILE[i][1])/(PROFILE[i+1][0]-PROFILE[i][0])*1000);
+    if (z > CAM.NEAR && z < 200) items.push({z: z, grade: g});
+  }
+  // into the display list, so a train further off can't paint over a nearer sign
+  for (const it of items)
+    DL.push({z: it.z, pr: 0, f: () => it.sig ? drawSignal(it.z, aspect) : it.grade !== undefined ? drawGradePost(it.z, it.grade) : drawSpeedSign(it.z, it.lim)});
+}
+
+// ============================================================
+// SCENE: E235 TRAINS & DEPTH-SORTED DISPLAY LIST
+// Platforms and trains both stretch hundreds of metres in depth, so
+// neither can simply be painted after the other. Both push small
+// depth chunks onto DL; dlFlush() paints everything far -> near.
+// On ties, pr breaks toward the laterally-farther object (platform).
+// ============================================================
+const DL = [];
+function dlFlush() {
+  DL.sort((a,b) => b.z - a.z || a.pr - b.pr);
+  for (const it of DL) { LAMP = !!it.lamp; it.f(); }
+  LAMP = false;
+  DL.length = 0;
+}
+
+// E235系: silver body, huge black front window crowned uguisu-green,
+// and green painted VERTICALLY on the doors (the waist band moved there
+// when platform doors started hiding it).
+function drawE235(ox, zF, L, parked) {
+  // Trains on the ADJACENT track stay in view far closer than CAM.NEAR —
+  // clipping them at 7 m leaves a see-through hole while they pass, so
+  // draw their bodywork almost to the camera plane.
+  const zN = Math.max(0.8, zF), zE = Math.min(FAR, zF + L);
+  if (zE <= zN) return;
+  const near = ox > 0 ? ox - 1.42 : ox + 1.42;   // body side facing the camera
+  const acx  = ox > 0 ? ox - 0.75 : ox + 0.75;   // near face of roof boxes
+  const k = lit(ox > 0 ? 'l' : 'r');                // the side facing us, in sun or shade
+  const body = (parked ? [148,152,156] : [206,210,214]).map(c => c*k);
+  const green= (parked ? [110,150,44]  : [154,205,50]).map(c => c*k);
+  const CAR = 20;
+  for (let z1 = zE; z1 > zN; ) {                 // 18 m chunks, far -> near
+    // zb is captured by the closure — z1 mutates before DL is flushed
+    const zb = z1, z0 = Math.max(zN, z1 - 18), zm = (z0+zb)/2;
+    DL.push({z: zb, pr: 1, f: () => {
+      wall(near, 0.30, 3.66, z0, zb, haze(zm, body[0], body[1], body[2]));   // body side
+      wall(near, 0.30, 0.62, z0, zb, haze(zm, 64, 66, 70));                  // underframe
+      wall(near, 2.25, 3.05, z0, zb, haze(zm, 38, 42, 48));                  // window band
+      // per-car details, anchored to the trainset
+      for (let c = Math.floor((z0-zF)/CAR); c <= Math.ceil((zb-zF)/CAR); c++) {
+        const zc = zF + c*CAR;
+        if (c > 0 && zc > z0 && zc < zb)
+          wall(near, 0.30, 3.66, zc-0.12, zc+0.12, haze(zm, 96, 98, 102));   // car-end gap
+        for (const zg of [zc+1.6, zc+18.4])                                  // bogies
+          if (zg > z0 && zg < zb) wall(near, 0.30, 0.92, zg-1.1, zg+1.1, haze(zm, 40, 42, 46));
+        for (const doff of [3.2, 7.9, 12.6, 17.3]) {                         // 4 green door pairs
+          const zd = zc + doff;
+          if (zd > z0 && zd < zb) {
+            wall(near, 0.55, 3.05, zd-0.65, zd+0.65, haze(zm, green[0], green[1], green[2]));
+            wall(near, 2.28, 2.98, zd-0.42, zd+0.42, haze(zm, 42, 48, 52));  // door windows
+          }
+        }
+        const za = zc + 7.2;                                                 // roof AC unit
+        if (za > z0 && za+3.4 < zb) {
+          wall(acx, 3.95, 4.12, za, za+3.4, haze(zm, 118, 122, 126));
+          slab(ox-0.75, ox+0.75, 4.12, za, za+3.4, haze(zm, 136, 140, 144));
+        }
+      }
+      wall(near, 3.55, 3.66, z0, zb, haze(zm, green[0], green[1], green[2])); // cant-rail line
+      slab(ox-1.42, ox+1.42, 3.95, z0, zb, haze(zm, 112, 116, 120));          // roof underside
+      if (!parked) {                                                          // pantographs, raised
+        for (let c = Math.floor((z0-zF)/CAR); c <= Math.ceil((zb-zF)/CAR); c++) {
+          if ((c%3)!==1) continue;
+          const zp = zF + c*CAR + 10;
+          if (zp < z0 || zp > zb) continue;
+          const a = CAM.project(ox+0.8, 3.95, zp), b = CAM.project(ox-0.1, 4.55, zp),
+                cc = CAM.project(ox+0.45, 5.02, zp);
+          X.strokeStyle = haze(zp, 58, 62, 66); X.lineWidth = Math.max(1, 0.05*a.s);
+          X.beginPath(); X.moveTo(a.x,a.y); X.lineTo(b.x,b.y); X.lineTo(cc.x,cc.y); X.stroke();
+          const h1 = CAM.project(ox-0.10, 5.02, zp), h2 = CAM.project(ox+1.0, 5.02, zp);
+          X.beginPath(); X.moveTo(h1.x,h1.y); X.lineTo(h2.x,h2.y); X.stroke();
+        }
+      }
+    }});
+    z1 = z0;
+  }
+  if (zF > CAM.NEAR) DL.push({z: zF+0.05, pr: 1, f: () => {   // cab front
+    face(ox-1.45, ox+1.45, 0.25, 3.75, zF, haze(zF, 232, 234, 236));  // white face
+    face(ox-1.42, ox+1.42, 3.75, 3.95, zF, haze(zF, 150, 154, 158));  // roof cap
+    face(ox-1.18, ox+1.18, 1.55, 3.62, zF, haze(zF, 22, 26, 30));     // the big black window
+    face(ox-1.18, ox+1.18, 3.30, 3.62, zF, haze(zF, green[0], green[1], green[2])); // green crown
+    face(ox-0.42, ox+0.42, 2.92, 3.22, zF, haze(zF, 244, 168, 70));   // destination LED
+    face(ox-1.30, ox+1.30, 0.05, 0.60, zF, haze(zF, 72, 76, 80));     // skirt
+    if (!parked) {
+      X.fillStyle = '#ffedb0';
+      for (const lx of [ox-0.92, ox+0.92]) {
+        const l = CAM.project(lx, 1.82, zF);
+        X.beginPath(); X.arc(l.x, l.y, Math.max(1.2, 0.15*l.s), 0, Math.PI*2); X.fill();
+      }
+    }
+  }});
+}
+
+// Opposing services on the adjacent track, circulating the other way.
+const OPP_N = 8, OPP_LEN = 160, OPP_SPEED = 15;   // 8両編成, m/s
+function drawOncoming() {
+  const lp = loopPos(S.train.position);
+  const t = S.worldTime || 0;
+  for (let i=0;i<OPP_N;i++) {
+    let p = (700 + i*(TOTAL_LOOP/OPP_N) - t*OPP_SPEED) % TOTAL_LOOP;
+    if (p < 0) p += TOTAL_LOOP;
+    let z = p - lp;
+    if (z < -TOTAL_LOOP/2) z += TOTAL_LOOP;
+    if (z >  TOTAL_LOOP/2) z -= TOTAL_LOOP;
+    if (z + OPP_LEN < 0.5 || z > FAR) continue;
+    drawE235(OPP_X, z, OPP_LEN, false);
+  }
+}
+
+// 東京総合車両センター (品川—大崎間) — stabled rakes beyond the fence, on the
+// left for 外回り and the right for 内回り (ROUTE sets YARD and YARD_SIDE).
+const YARD = [500, 1600];
+let YARD_SIDE = -1;
+function drawYard() {
+  const lp = loopPos(S.train.position);
+  for (let t=3; t>=0; t--) {                     // outermost siding first
+    const sx = YARD_SIDE*(8.5 + t*4.2);
+    const s0 = YARD[0] + 90 + t*130, len = 160 - t*20;
+    const zF = s0 - lp;
+    if (zF + len < 0.5 || zF > FAR) continue;
+    drawE235(sx, zF, len, true);
+  }
+}
+
+// ============================================================
+// SCENE: STATIONS
+// ============================================================
+const PLAT_LEN = 220, PLAT_H = 1.10, PLAT_EDGE = 1.68;
+// ホームドア layout, in metres from the stop point (g): one 2.6 m opening per
+// E235 door (4 per 20 m car, 11 cars), solid 戸袋 cabinets in between.
+const GATE_H = 1.30, GATE_OPEN = 1.3;
+const DOOR_G = [];
+for (let c=10; c>=0; c--) for (const d of [17.3, 12.6, 7.9, 3.2]) DOOR_G.push(-(c*20 + d));
+const GATE_CABS = [];
+{ let g = -PLAT_LEN - 4;
+  for (const d of DOOR_G) { GATE_CABS.push([g, d-GATE_OPEN]); g = d+GATE_OPEN; }
+  GATE_CABS.push([g, 26]); }
+
+// A standing passenger, drawn in screen space at their projected feet.
+function drawPerson(x, z, h, r) {
+  const p = CAM.project(x, PLAT_H, z), s = p.s;
+  if (s < 2.5) return;
+  const coat = [[38,42,56],[54,44,48],[36,50,52],[150,146,138],[70,72,78],[120,60,52]][(r*61|0)%6];
+  const legs = [[30,32,38],[46,48,56],[70,64,58]][(r*23|0)%3];
+  const lw = 0.13*s, tw = 0.44*s, leg = 0.46*h*s, tor = 0.36*h*s, hr = 0.105*s;
+  X.fillStyle = haze(z, legs[0], legs[1], legs[2]);
+  X.fillRect(p.x - tw*0.34, p.y - leg, lw, leg);
+  X.fillRect(p.x + tw*0.34 - lw, p.y - leg, lw, leg);
+  X.fillStyle = haze(z, 24, 24, 26);                                       // shoes
+  X.fillRect(p.x - tw*0.36, p.y - 0.05*s, tw*0.72, 0.05*s);
+  const ty = p.y - leg - tor;
+  X.fillStyle = haze(z, coat[0], coat[1], coat[2]);
+  rrect(p.x - tw/2, ty, tw, tor + 0.06*s, 0.08*s); X.fill();
+  X.fillStyle = 'rgba(0,0,0,0.18)';                                        // shaded side
+  X.fillRect(p.x + tw*0.12, ty + 0.06*s, tw*0.38, tor);
+  if (r > 0.55) {                                                          // shoulder bag
+    X.fillStyle = haze(z, 40, 34, 30);
+    X.fillRect(p.x + tw*0.42, ty + tor*0.55, 0.16*s, 0.2*s);
+  }
+  X.fillStyle = haze(z, 206, 168, 140);                                    // face
+  X.beginPath(); X.arc(p.x, ty - hr*0.95, hr, 0, Math.PI*2); X.fill();
+  X.fillStyle = haze(z, 30, 26, 24);                                       // hair
+  X.beginPath(); X.arc(p.x, ty - hr*1.1, hr*1.02, Math.PI*1.02, Math.PI*1.98); X.fill();
+}
+
+// Square-on boards hang from the canopy, so their screen footprint is a plain
+// rectangle; returns it (with pixels-per-metre) after drawing the hanger rods.
+function hangBoard(side, inner, ROOF, x1, x2, yB, yT, z) {
+  const xa = inner+side*x1, xb = inner+side*x2;
+  for (const t of [0.15, 0.85]) face(xa+(xb-xa)*t-0.02, xa+(xb-xa)*t+0.02, yT, ROOF, z, haze(z, 70, 74, 78));
+  const p = CAM.project(Math.min(xa,xb), yT, z), q = CAM.project(Math.max(xa,xb), yB, z);
+  return {x: p.x, y: p.y, w: q.x-p.x, h: q.y-p.y, s: p.s};
+}
+// Text that would fall below a legible size is drawn as a grey bar, the way
+// distant lettering actually reads, instead of a blurred smudge.
+function boardText(str, x, y, fs, font, col, bar, align) {
+  if (fs >= 6) { text(str, x, y, `${font} ${Math.floor(fs)}px ${JP}`, col, align); return; }
+  const w = str.length*fs*(/[^\x00-\x7f]/.test(str) ? 1 : 0.6);
+  X.fillStyle = bar;
+  X.fillRect(align==='center' ? x-w/2 : align==='right' ? x-w : x, y-fs*0.3, w, Math.max(0.6, fs*0.6));
+}
+
+function drawNameBoard(st, side, inner, ROOF, z) {
+  if (z < CAM.NEAR) return;
+  const b = hangBoard(side, inner, ROOF, 0.45, 3.25, ROOF-1.2, ROOF-0.45, z);
+  if (b.w < 3) return;
+  const s = b.s, m = 0.03*s, cx = b.x + b.w/2;
+  X.fillStyle = haze(z, 70, 74, 78); X.fillRect(b.x, b.y, b.w, b.h);
+  X.fillStyle = haze(z, 246, 247, 244); X.fillRect(b.x+m, b.y+m, b.w-2*m, b.h-2*m);
+  X.fillStyle = haze(z, 128, 184, 56); X.fillRect(b.x+m, b.y+b.h*0.70, b.w-2*m, b.h*0.22);
+  X.textBaseline = 'middle';
+  boardText(st.name, cx, b.y+b.h*0.30, 0.27*s, 'bold', haze(z, 22, 30, 42), haze(z, 120, 126, 134), 'center');
+  boardText(st.nameEn, cx, b.y+b.h*0.57, 0.085*s, '', haze(z, 60, 70, 86), haze(z, 190, 194, 198), 'center');
+  // neighbouring stations in the green band: travel direction on the right
+  const prev = STATIONS[(st.id + (side<0 ? STATIONS.length-1 : 1)) % STATIONS.length].name;
+  const next = STATIONS[(st.id + (side<0 ? 1 : STATIONS.length-1)) % STATIONS.length].name;
+  const by = b.y+b.h*0.81, fs = 0.095*s;
+  boardText(prev, b.x+b.w*0.06, by, fs, '', '#fff', 'rgba(255,255,255,0.6)', 'left');
+  boardText(next, b.x+b.w*0.94, by, fs, '', '#fff', 'rgba(255,255,255,0.6)', 'right');
+  if (fs >= 6) text('▶', cx, by, `${Math.floor(fs)}px ${JP}`, '#fff', 'center');
+  X.textBaseline = 'alphabetic';
+}
+
+// LED 発車標: next two departures from this platform.
+const HUBS = ['品川', '渋谷', '新宿', '池袋', '上野', '東京'];
+function drawDepartureBoard(st, side, inner, ROOF, z) {
+  if (z < CAM.NEAR) return;
+  const b = hangBoard(side, inner, ROOF, 0.35, 2.95, ROOF-1.0, ROOF-0.4, z);
+  if (b.w < 3) return;
+  const s = b.s;
+  X.fillStyle = haze(z, 40, 42, 46); X.fillRect(b.x, b.y, b.w, b.h);
+  X.fillStyle = '#0b0c0e'; X.fillRect(b.x+0.04*s, b.y+0.04*s, b.w-0.08*s, b.h-0.08*s);
+  // the next two hubs in the direction this platform's trains run
+  const dest = [];
+  for (let k=1; dest.length<2 && k<STATIONS.length; k++) {
+    const id = (st.id + (side<0 ? k : STATIONS.length-k)) % STATIONS.length;
+    if (HUBS.includes(STATIONS[id].name)) dest.push(STATIONS[id].name);
+  }
+  const t0 = side<0 ? stationDueTime(st.id) + st.stopTime : stationDueTime(st.id) + 130;
+  const fs = 0.12*s;
+  X.textBaseline = 'middle';
+  for (let row=0; row<2; row++) {
+    const y = b.y + b.h*(0.32 + row*0.38);
+    const tm = clockTime(t0 + row*240).slice(0,5);
+    boardText(row ? '次発' : '先発', b.x+b.w*0.05, y, fs, '', '#e8e8e0', 'rgba(220,220,210,0.5)', 'left');
+    boardText(tm, b.x+b.w*0.25, y, fs, '', '#ff9a2e', 'rgba(255,154,46,0.55)', 'left');
+    boardText(dest.join('・') + '方面', b.x+b.w*0.47, y, fs, '', '#ff9a2e', 'rgba(255,154,46,0.55)', 'left');
+    boardText('11両', b.x+b.w*0.95, y, fs, '', '#7ce06a', 'rgba(124,224,106,0.55)', 'right');
+  }
+  X.textBaseline = 'alphabetic';
+}
+
+// 停止位置目標: stands just behind the ホームドア line, board raised clear of the cabinets.
+function drawStopMarker(zStop) {
+  const base = CAM.project(-2.25, PLAT_H, zStop), s = base.s;
+  const top = CAM.project(-2.25, 2.6, zStop);
+  X.fillStyle = '#d8d8d4';
+  X.fillRect(base.x-0.05*s, top.y, Math.max(1,0.10*s), base.y-top.y);
+  const c = CAM.project(-2.25, 2.85, zStop), bw = Math.max(4,0.75*s), bh = Math.max(4,0.75*s);
+  X.fillStyle = '#c8102e'; X.fillRect(c.x-bw/2, c.y-bh/2, bw, bh);
+  X.fillStyle = '#fff';    X.fillRect(c.x-bw/2, c.y-bh*0.12, bw, Math.max(1,bh*0.24));
+  if (bh > 16) {
+    X.textBaseline = 'middle';
+    text('停', c.x, c.y-bh*0.28, `bold ${Math.floor(bh*0.34)}px ${JP}`, '#fff', 'center');
+    X.textBaseline = 'alphabetic';
+  }
+}
+
+function drawPlatform(st, zStop) {
+  // Platforms sit beside the track, so like passing trains they stay in view
+  // well inside CAM.NEAR — clip at the camera plane or our (left-hand) deck
+  // vanishes from the window edge while running alongside it.
+  const z1 = Math.max(1.2, zStop - PLAT_LEN), z2 = zStop + 26;
+  if (z2 <= 1.5) return;
+  const segs = 12, ROOF = 4.55;
+  for (let side=-1; side<=1; side+=2) {
+    // 相対式ホーム: our platform on the left (we keep left); the right platform
+    // sits BEYOND the opposite running track so neither deck covers a track.
+    const ours = side < 0;
+    const off  = ours ? 0 : OPP_X;
+    const e    = side*(PLAT_EDGE + off);
+    const back = side*(9.6 + off);
+    const inner= side*(2.1 + off);
+    const colX = side*(7.4 + off);
+    const gate = e + side*0.25;              // platform-door line, just in from the edge
+    // each bay becomes one depth-sorted chunk so passing trains interleave correctly.
+    // Everything discrete (columns, gate posts, furniture, people) is placed on a
+    // STATION-relative grid (g = metres from the stop point), so it is fixed to the
+    // platform and recedes as the train advances — never anchored to the train.
+    for (let i=segs-1;i>=0;i--) {
+      const a = z1 + (z2-z1)*i/segs, b = z1 + (z2-z1)*(i+1)/segs, zm = (a+b)/2;
+      const g0 = a - zStop, g1 = b - zStop;
+      DL.push({z: b, pr: 0, lamp: 1, f: () => {
+        wall(back, PLAT_H, 3.4, a, b, haze(zm, 74, 76, 80));                   // back wall, in shade
+        // platform face: an overhanging lip over the 待避空間 refuge recess
+        wall(e+side*0.6, 0, PLAT_H-0.22, a, b, haze(zm, 36, 36, 38));          // recess back, in shadow
+        slab(e, e+side*0.6, 0.02, a, b, haze(zm, 54, 52, 50));                 // recess floor
+        for (let g = Math.ceil(g0/5)*5; g < g1; g += 5) {                      // support piers
+          const zg = zStop + g;
+          wall(e, 0, PLAT_H-0.22, zg-0.2, zg+0.2, haze(zg, 98, 96, 92));
+          if (zg-0.2 > CAM.NEAR) face(e, e+side*0.6, 0, PLAT_H-0.22, zg-0.2, haze(zg, 80, 78, 75));
+        }
+        wall(e, PLAT_H-0.22, PLAT_H, a, b, haze(zm, 118,116,110));             // edge lip
+        slab(e, back, PLAT_H, a, b, haze(zm, 150,149,143));                    // deck, under the canopy
+        if (ours && SUN.x < 0) {                                               // canopy shade falls across our track
+          const xs = Math.min(2.2, inner - ROOF*SUN.x/SUN.y);
+          if (xs > e) shadow(e, xs, 0.035, a, b, 0.26);
+        }
+        slab(e+side*0.30, e+side*1.00, PLAT_H+0.015, a, b,                     // tactile strip
+             haze(zm, 232,190,38));
+        for (let g = Math.ceil(g0/12)*12; g < g1; g += 12)                     // canopy columns
+          wall(colX, PLAT_H, ROOF, zStop+g-0.14, zStop+g+0.14, haze(zStop+g, 92, 94, 96));
+        slab(inner, back, ROOF, a, b, haze(zm, 48, 52, 57));                   // underside, in shade
+        slab(inner+side*1.0, inner+side*1.7, ROOF-0.04, a, b,                  // fluorescent strip
+             haze(zm, 234, 230, 205));
+        wall(inner, ROOF, ROOF+0.28, a, b, haze(zm, 158,162,166));             // fascia
+        // back-wall furniture: vending machines, benches, lit ad panels
+        for (let g = Math.ceil(g0/13)*13; g < g1; g += 13) {
+          const zg = zStop + g, r = hash(st.id*7919 + g*13 + (side>0?0:1));
+          if (r < 0.32) {                                                      // vending machine
+            const vc = r < 0.11 ? [206,44,40] : r < 0.21 ? [232,234,236] : [52,120,196];
+            const vx = back - side*0.7, near = zg-0.45;
+            wall(vx, PLAT_H, PLAT_H+1.83, near, zg+0.45, haze(zg, vc[0], vc[1], vc[2]));
+            if (near > CAM.NEAR) face(vx, back, PLAT_H, PLAT_H+1.83, near, haze(zg, vc[0]*0.7, vc[1]*0.7, vc[2]*0.7));
+            wall(vx, PLAT_H+1.02, PLAT_H+1.68, zg-0.38, zg+0.38, haze(zg, 236, 238, 230));  // product window
+            if (zg < 70) for (let row=0; row<3; row++) for (let k=0; k<5; k++) {
+              const pc = [[200,40,40],[240,200,60],[40,90,170],[230,230,230],[60,150,80]][(hash(zg*31+row*5+k)*5)|0];
+              const y0 = PLAT_H+1.10+row*0.2, zk = zg-0.34+k*0.14;
+              wall(vx, y0, y0+0.12, zk, zk+0.09, haze(zg, pc[0], pc[1], pc[2]));
+            }
+            wall(vx, PLAT_H+0.38, PLAT_H+0.9, zg-0.38, zg+0.1, haze(zg, 40, 44, 50));        // buttons / coin panel
+            wall(vx, PLAT_H+0.08, PLAT_H+0.26, zg-0.3, zg+0.3, haze(zg, 24, 24, 26));        // take-out slot
+          } else if (r < 0.58) {                                               // bench, three seats
+            const bx = back - side*0.95;
+            for (const lz of [-1.1, 1.1]) wall(bx + side*0.2, PLAT_H, PLAT_H+0.42, zg+lz-0.05, zg+lz+0.05, haze(zg, 60, 62, 66));
+            slab(bx, bx + side*0.45, PLAT_H+0.42, zg-1.3, zg+1.3, haze(zg, 66, 110, 160));
+            wall(bx, PLAT_H+0.34, PLAT_H+0.44, zg-1.3, zg+1.3, haze(zg, 44, 80, 122));       // seat front edge
+            wall(bx + side*0.45, PLAT_H+0.42, PLAT_H+0.86, zg-1.3, zg+1.3, haze(zg, 58, 100, 148));
+          } else if (r < 0.82) {                                               // back-lit ad panel
+            const ax = back - side*0.1, ac = [[64,124,190],[214,90,60],[60,150,110],[230,190,60]][(r*40|0)%4];
+            wall(ax, PLAT_H+1.05, PLAT_H+2.55, zg-1.45, zg+1.45, haze(zg, 70, 72, 76));      // frame
+            wall(ax - side*0.02, PLAT_H+1.12, PLAT_H+2.48, zg-1.38, zg+1.38, haze(zg, 244, 244, 236));
+            wall(ax - side*0.03, PLAT_H+1.6, PLAT_H+2.4, zg-1.3, zg+0.2, haze(zg, ac[0], ac[1], ac[2]));
+            wall(ax - side*0.03, PLAT_H+1.25, PLAT_H+1.45, zg-1.3, zg+0.8, haze(zg, 60, 60, 66));
+          }
+        }
+        // hanging 駅名標 (JR East style) and a 発車標 near the stairs
+        for (let g = Math.ceil((g0+15)/55)*55-15; g < g1; g += 55) drawNameBoard(st, side, inner, ROOF, zStop+g);
+        for (const g of [-60, -158]) if (g >= g0 && g < g1) drawDepartureBoard(st, side, inner, ROOF, zStop+g);
+        // 乗車位置 queue lines painted on the deck, and passengers lined up behind each door
+        const lf = lit(side>0 ? 'l' : 'r');
+        const open = ours && S.phase==='stopped' && Math.abs(zStop) < 12;
+        const ppl = [];
+        for (const d of DOOR_G) {
+          if (d < g0-1 || d >= g1) continue;
+          const zd = zStop + d;
+          if (zd < 60) for (const q of [-0.95, 0, 0.95])
+            slab(gate+side*0.25, gate+side*2.2, PLAT_H+0.012, zd+q-0.04, zd+q+0.04, haze(zd, 90, 160, 96));
+          const n = (hash(st.id*7907 + d*13 + (side>0?0:3))*5)|0;
+          for (let k=0; k<n; k++) for (const lane of [-0.48, 0.48]) {
+            const r = hash(st.id*104729 + d*31 + k*7 + (lane>0?1:0));
+            if (k >= n-1 && r < 0.5) continue;
+            ppl.push([gate + side*(open ? 0.3 + k*0.6 : 0.7 + k*0.62), zd + lane + (r-0.5)*0.2, 1.55 + r*0.25, r]);
+          }
+        }
+        // a few people walking further back
+        for (let g = Math.ceil(g0/9)*9; g < g1; g += 9) {
+          const r = hash(st.id*15485863 + g*17 + (side>0?0:5));
+          if (r >= 0.6) ppl.push([e + side*(3.6 + r*3.2), zStop + g + r*4, 1.55 + r*0.22, r]);
+        }
+        // far to near, with the stop marker slotted in at its depth
+        if (ours && zStop >= a && zStop < b && zStop > CAM.NEAR) ppl.push([0, zStop, 0, -1]);
+        ppl.sort((p, q) => q[1] - p[1]);
+        for (const p of ppl) p[3] < 0 ? drawStopMarker(zStop) : drawPerson(p[0], p[1], p[2], p[3]);
+        // ホームドア: solid 戸袋 cabinets between door openings, leaves slide into them
+        const gt = gate + side*0.28;
+        for (let i=GATE_CABS.length-1; i>=0; i--) {
+          const c0 = Math.max(GATE_CABS[i][0], g0), c1 = Math.min(GATE_CABS[i][1], g1);
+          if (c0 >= c1) continue;
+          const za = zStop+c0, zb = zStop+c1, zc = (za+zb)/2;
+          slab(gate, gt, PLAT_H+GATE_H, za, zb, haze(zc, 196*lf, 200*lf, 202*lf));
+          wall(gate, PLAT_H, PLAT_H+GATE_H, za, zb, haze(zc, 214*lf, 218*lf, 220*lf));
+          wall(gate-side*0.005, PLAT_H+1.02, PLAT_H+1.1, za, zb, haze(zc, 128, 184, 56));   // ウグイス band
+          wall(gate-side*0.005, PLAT_H, PLAT_H+0.1, za, zb, haze(zc, 120, 124, 128));      // kick plate
+          if (c0 === GATE_CABS[i][0] && za > CAM.NEAR)
+            face(gate, gt, PLAT_H, PLAT_H+GATE_H, za, haze(za, 176, 180, 184));
+        }
+        if (!open) for (const d of DOOR_G) {                                   // closed door leaves
+          if (d-GATE_OPEN >= g1 || d+GATE_OPEN <= g0) continue;
+          const zl = zStop + Math.max(d-GATE_OPEN, g0), zr = zStop + Math.min(d+GATE_OPEN, g1);
+          wall(gate+side*0.12, PLAT_H+0.04, PLAT_H+GATE_H-0.08, zl, zr, haze(zl, 200*lf, 206*lf, 210*lf));
+          X.globalAlpha = 0.5;
+          wall(gate+side*0.11, PLAT_H+0.62, PLAT_H+1.08, zl+0.15, zr-0.15, haze(zl, 120, 140, 156)); // window
+          X.globalAlpha = 1;
+          if (zStop+d > CAM.NEAR) wall(gate+side*0.11, PLAT_H+0.04, PLAT_H+GATE_H-0.08, zStop+d-0.02, zStop+d+0.02, haze(zl, 90, 96, 100));
+        }
+      }});
+    }
+    // stairwell house mid-platform — the way down into the station
+    const sw1 = zStop - 96, sw2 = zStop - 76;
+    if (sw2 > z1 && sw1 < z2) DL.push({z: sw2, pr: 0, lamp: 1, f: () => {
+      const sx = e + side*2.4, zs = Math.max(z1, sw1);
+      wall(sx, PLAT_H, ROOF+0.55, zs, sw2, haze((zs+sw2)/2, 128, 132, 138));
+      slab(sx, back, ROOF+0.55, zs, sw2, haze((zs+sw2)/2, 96, 100, 106));
+      if (sw1 > z1) face(sx, back, PLAT_H, ROOF+0.55, sw1, haze(sw1, 140, 144, 150));
+    }});
+    // the canopy has to end somewhere — cap the near edge
+    if (z1 > CAM.NEAR + 0.5) DL.push({z: z1, pr: 0, lamp: 1, f: () => {
+      face(inner, back, ROOF, ROOF+0.28, z1, haze(z1, 168,172,176));
+      face(e, back, 0, PLAT_H, z1, haze(z1, 100, 99, 96));
+    }});
+  }
+}
+
+function drawStations() {
+  const lp = loopPos(S.train.position);
+  const list = [];
+  for (const st of STATIONS) {
+    let z = st.pos - lp;
+    if (z >  TOTAL_LOOP/2) z -= TOTAL_LOOP;
+    if (z < -TOTAL_LOOP/2) z += TOTAL_LOOP;
+    if (z > -300 && z < 640) list.push({st:st, z:z});
+  }
+  list.sort((a,b) => b.z - a.z);
+  for (const it of list) drawPlatform(it.st, it.z);
+}
+
+// ============================================================
+// HEADLIGHT & RAIN — drawn over the finished forward view
+// ============================================================
+function drawHeadlight() {
+  if (ENV.time === 'day' && !ENV.rain) return;
+  const a = ENV.night ? 0.42 : ENV.time === 'eve' ? 0.1 : 0.06;
+  X.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < 8; i++) {
+    const z1 = ZSEG[i], z2 = ZSEG[i+1], k = a*Math.pow(1 - z1/ZSEG[8], 1.5);
+    slab(-1.7, 1.7, -0.26, z1, z2, `rgba(255,236,200,${k.toFixed(3)})`);
+  }
+  X.globalCompositeOperation = 'source-over';
+}
+// Falling rain as world particles: they stream toward the cab as it moves.
+function drawRain() {
+  if (!ENV.rain) return;
+  const t = performance.now()/1000, p = S.train.position, v = S.train.speed/3.6;
+  X.strokeStyle = 'rgba(196,206,218,0.30)'; X.lineWidth = 1;
+  X.beginPath();
+  for (let i = 0, n = LOWQ ? 120 : 280; i < n; i++) {
+    const x = (hash(i*5+1) - 0.5)*26;
+    const z = 3 + ((hash(i*5+2)*70 - p) % 70 + 70) % 70;
+    const y = ((hash(i*5+3)*11 - t*9) % 11 + 11) % 11 - 0.5;
+    const a = CAM.project(x, y, z), b = CAM.project(x, y + 0.5, z + 0.05 + Math.min(3, v*0.05));
+    X.moveTo(a.x, a.y); X.lineTo(b.x, b.y);
+  }
+  X.stroke();
+}
+
+// ============================================================
+// CAB SHELL — pillars, roof, window frame, glass
+// ============================================================
+const WIPE_PARK = -Math.PI*0.965, WIPE_TOP = -Math.PI*0.42, WIPE_T = 1.5;
+const WIPER = {
+  a: WIPE_PARK, prev: WIPE_PARK, t: 0,
+  update(dt) {
+    this.prev = this.a;
+    if (ENV.rain || this.t > 0) {                     // finish the stroke after the rain stops
+      this.t += dt;
+      this.t = !ENV.rain && this.t >= WIPE_T ? 0 : this.t % WIPE_T;
+    }
+    this.a = WIPE_PARK + (WIPE_TOP - WIPE_PARK)*(0.5 - 0.5*Math.cos(2*Math.PI*this.t/WIPE_T));
+  },
+};
+// raindrops on the glass: each reappears a while after the blade last wiped it
+const DROPS = Array.from({length: 220}, (_, i) => ({
+  u: hash(i*13+1), v: Math.pow(hash(i*13+2), 0.8), r: 0.7 + hash(i*13+3)*1.8, d: hash(i*13+4)*1.6, t: -99,
+}));
+
+function drawCabShell() {
+  const wx = LAY.winX, wy = LAY.winY, ww = LAY.winW, wh = LAY.winH, wb = LAY.winB;
+  // wiper geometry: pivot just below the glass, blade parked along the bottom edge
+  const pvx = wx+ww*0.36, pvy = wb+wh*0.035, arm = ww*0.30;
+  X.save();
+  X.beginPath(); X.rect(wx, wy, ww, wh); X.clip();
+  // glass tint
+  const gl = X.createLinearGradient(0, wy, 0, wb);
+  gl.addColorStop(0,'rgba(150,180,205,0.14)'); gl.addColorStop(0.35,'rgba(150,180,205,0.02)');
+  gl.addColorStop(1,'rgba(120,140,160,0.06)');
+  X.fillStyle = gl; X.fillRect(wx, wy, ww, wh);
+  // road grime everywhere except the arc the wiper sweeps clean
+  X.beginPath(); X.rect(wx, wy, ww, wh);
+  X.moveTo(pvx, pvy); X.arc(pvx, pvy, arm*1.04, -Math.PI*0.97, -Math.PI*0.42);
+  X.lineTo(pvx, pvy);
+  if (!LOWQ) X.filter = `blur(${Math.max(2, H*0.008)}px)`;                         // the swept edge is soft
+  X.fillStyle = 'rgba(120,110,92,0.05)'; X.fill('evenodd');
+  X.filter = 'none';
+  const dg = X.createLinearGradient(0, wb-wh*0.22, 0, wb);                 // spray film low on the glass
+  dg.addColorStop(0,'rgba(110,100,84,0)'); dg.addColorStop(1,'rgba(110,100,84,0.10)');
+  X.fillStyle = dg; X.fillRect(wx, wb-wh*0.22, ww, wh*0.22);
+  // dust specks and dried drops, fixed to the glass
+  for (let i=0; i<160; i++) {
+    const sx = wx + hash(i*3+1)*ww, sy = wy + Math.pow(hash(i*3+2), 0.6)*wh;
+    const dx = sx-pvx, dy = sy-pvy, swept = dx*dx+dy*dy < arm*arm*1.08 && Math.atan2(dy, dx) < -Math.PI*0.42;
+    if (swept && hash(i*7) < 0.8) continue;
+    X.fillStyle = `rgba(${hash(i)<0.5 ? '235,230,215' : '70,62,52'},${0.10+hash(i*5)*0.14})`;
+    X.beginPath(); X.arc(sx, sy, 0.5 + hash(i*3+3)*H*0.0022, 0, Math.PI*2); X.fill();
+  }
+  // raindrops
+  if (ENV.rain || WIPER.t > 0) {
+    const now = performance.now()/1000, lo = Math.min(WIPER.prev, WIPER.a), hi = Math.max(WIPER.prev, WIPER.a);
+    for (const d of DROPS) {
+      const sx = wx + d.u*ww, sy = wy + d.v*wh, ang = Math.atan2(sy-pvy, sx-pvx);
+      if (Math.hypot(sx-pvx, sy-pvy) < arm*1.04 && ang >= lo-0.02 && ang <= hi+0.02) d.t = now;
+      const al = ENV.rain ? Math.max(0, Math.min(1, (now - d.t - d.d)/1.2)) : 0;
+      if (al <= 0) continue;
+      const r = d.r*H/900*1.6;
+      X.fillStyle = `rgba(210,220,230,${0.16*al})`;
+      X.beginPath(); X.arc(sx, sy, r, 0, Math.PI*2); X.fill();
+      X.fillStyle = `rgba(0,0,0,${0.22*al})`;
+      X.beginPath(); X.arc(sx, sy + r*0.25, r*0.8, 0, Math.PI); X.fill();
+      X.fillStyle = `rgba(255,255,255,${0.45*al})`;
+      X.fillRect(sx - r*0.4, sy - r*0.45, Math.max(1, r*0.35), Math.max(1, r*0.35));
+    }
+  }
+  // the desk reflected in the raked glass: TIMS glow and the speedometer bezel
+  X.globalCompositeOperation = 'lighter';
+  const rk = ENV.night ? 3 : ENV.time === 'eve' || ENV.wx !== 'clear' ? 1.6 : 1;   // stronger when it's dark out
+  if (!LOWQ) X.filter = `blur(${Math.max(3, H*0.012)}px)`;
+  const rf = (yc) => wb - (yc - wb)*0.45;                                 // mirror, foreshortened
+  X.fillStyle = `rgba(40,80,130,${0.06*rk})`;
+  X.fillRect(W*0.60, rf(LAY.conY+LAY.conH*0.94), W*0.375, (LAY.conH*0.85)*0.45);
+  X.fillStyle = `rgba(120,130,140,${0.035*rk})`;
+  X.beginPath(); X.ellipse(W*0.325, rf(LAY.conY+LAY.conH*0.5), W*0.075, LAY.conH*0.2, 0, 0, Math.PI*2); X.fill();
+  X.fillStyle = 'rgba(255,255,255,0.03)';
+  X.fillRect(wx, wb-wh*0.04, ww, wh*0.04);                                // desk top edge
+  X.filter = 'none';
+  // sky glare streak
+  X.fillStyle = 'rgba(223,240,255,0.04)';
+  X.beginPath();
+  X.moveTo(wx+ww*0.04, wb); X.lineTo(wx+ww*0.30, wy);
+  X.lineTo(wx+ww*0.40, wy); X.lineTo(wx+ww*0.14, wb);
+  X.closePath(); X.fill();
+  X.globalCompositeOperation = 'source-over';
+  // vignette: the glass darkens toward the frame
+  const vg = X.createRadialGradient(wx+ww/2, wy+wh*0.55, wh*0.45, wx+ww/2, wy+wh*0.55, ww*0.62);
+  vg.addColorStop(0,'rgba(0,0,0,0)'); vg.addColorStop(1,'rgba(0,0,0,0.30)');
+  X.fillStyle = vg; X.fillRect(wx, wy, ww, wh);
+  // roller blinds (遮陽簾): smoked film, left one pulled part-way down
+  const bl = wy + wh*0.16;
+  X.fillStyle = 'rgba(28,32,26,0.62)'; X.fillRect(wx, wy, ww*0.52, bl-wy);
+  X.fillStyle = '#2a2e32'; X.fillRect(wx, bl-H*0.006, ww*0.52, H*0.006);  // bottom bar
+  X.fillStyle = '#3c4247'; X.fillRect(wx+ww*0.25, bl, ww*0.02, H*0.012);  // pull tab
+  X.fillStyle = '#16191c'; X.fillRect(wx, wy, ww, wh*0.03);               // roller housing
+  X.fillStyle = 'rgba(28,32,26,0.62)'; X.fillRect(wx+ww*0.52, wy, ww*0.48, wh*0.045);
+  // wiper: arm from the pivot, blade with spine and yokes, slightly out of focus
+  const ang = WIPER.a, tx = pvx + Math.cos(ang)*arm, ty = pvy + Math.sin(ang)*arm;
+  if (!LOWQ) X.filter = `blur(${Math.max(0.5, H*0.0012)}px)`;
+  X.lineCap = 'round';
+  X.strokeStyle = '#121416'; X.lineWidth = H*0.009;
+  X.beginPath(); X.moveTo(pvx, pvy); X.lineTo(pvx + (tx-pvx)*0.55, pvy + (ty-pvy)*0.55 - H*0.004); X.stroke();
+  X.strokeStyle = '#202326'; X.lineWidth = H*0.011;                       // blade spine
+  X.beginPath(); X.moveTo(pvx-(tx-pvx)*0.02, pvy-H*0.004); X.lineTo(tx, ty - H*0.006); X.stroke();
+  X.strokeStyle = 'rgba(255,255,255,0.14)'; X.lineWidth = H*0.002;        // light catching its top
+  X.beginPath(); X.moveTo(pvx-(tx-pvx)*0.02, pvy-H*0.009); X.lineTo(tx, ty - H*0.011); X.stroke();
+  X.strokeStyle = '#08090a'; X.lineWidth = H*0.003;                        // rubber
+  X.beginPath(); X.moveTo(pvx, pvy+H*0.002); X.lineTo(tx, ty); X.stroke();
+  X.fillStyle = '#1c1f22';
+  for (const t of [0.15, 0.38, 0.62, 0.85]) {                              // yokes
+    const yx = pvx + (tx-pvx)*t, yy = pvy + (ty-pvy)*t;
+    X.fillRect(yx - H*0.006, yy - H*0.009, H*0.012, H*0.006);
+  }
+  X.lineCap = 'butt'; X.filter = 'none';
+  X.restore();
+
+  // ceiling: panels, speaker grille, dome light
+  const roof = X.createLinearGradient(0, 0, 0, wy);
+  roof.addColorStop(0,'#3a3f45'); roof.addColorStop(0.6,'#22262a'); roof.addColorStop(1,'#0e1012');
+  X.fillStyle = roof; X.fillRect(0, 0, W, wy);
+  X.fillStyle = 'rgba(0,0,0,0.35)';
+  for (const f of [0.22, 0.5, 0.78]) X.fillRect(W*f, 0, Math.max(1, W*0.0012), wy*0.8);
+  X.fillStyle = '#16191c'; rrect(W*0.62, wy*0.18, W*0.07, wy*0.36, wy*0.08); X.fill();
+  X.fillStyle = '#2c3136';
+  for (let i=0; i<12; i++) X.fillRect(W*0.625 + i*W*0.0052, wy*0.25, Math.max(1, W*0.0015), wy*0.22);
+  X.fillStyle = '#c9cdc4'; rrect(W*0.36, wy*0.12, W*0.06, wy*0.22, wy*0.1); X.fill();
+  X.fillStyle = 'rgba(255,255,255,0.35)'; X.fillRect(W*0.365, wy*0.15, W*0.05, wy*0.06);
+
+  // left pillar, with a sliver of the side window beyond it
+  const sw = wx*0.42;
+  const sg = X.createLinearGradient(0, wy, 0, wb);
+  sg.addColorStop(0,'#8fa7bd'); sg.addColorStop(0.45,'#a9b4bd'); sg.addColorStop(0.5,'#6d7468'); sg.addColorStop(1,'#4c5048');
+  X.fillStyle = sg; X.fillRect(0, wy, sw, wh);
+  for (let i=0; i<6; i++) {                                                // scenery streaking past
+    const u = ((hash(i*11)*400 - S.train.position*1.6) % 400 + 400) % 400 / 400;
+    X.fillStyle = `rgba(${hash(i)<0.5 ? '60,66,72' : '170,176,180'},0.35)`;
+    X.fillRect(u*sw*3 - sw, wy + wh*(0.25 + hash(i*5)*0.3), sw*(0.3 + hash(i*7)*0.6), wh*(0.1 + hash(i*9)*0.3));
+  }
+  X.fillStyle = 'rgba(150,180,205,0.18)'; X.fillRect(0, wy, sw, wh);
+  X.fillStyle = '#0b0c0e'; X.fillRect(sw-2, wy, 3, wh);                    // seal
+  const pil = X.createLinearGradient(sw, 0, wx, 0);
+  pil.addColorStop(0,'#14171a'); pil.addColorStop(0.5,'#2c3136'); pil.addColorStop(1,'#191c1f');
+  X.fillStyle = pil; X.fillRect(sw+1, wy, wx-sw-1, wh);
+  const pir = X.createLinearGradient(wx+ww, 0, W, 0);
+  pir.addColorStop(0,'#191c1f'); pir.addColorStop(0.45,'#2c3136'); pir.addColorStop(1,'#14171a');
+  X.fillStyle = pir; X.fillRect(wx+ww, wy, W-wx-ww, wh);
+
+  // rubber seal + metal frame
+  X.strokeStyle = '#0b0c0e'; X.lineWidth = Math.max(6, W*0.006);
+  X.strokeRect(wx-X.lineWidth/2, wy-X.lineWidth/2, ww+X.lineWidth, wh+X.lineWidth);
+  X.strokeStyle = '#565c62'; X.lineWidth = 2;
+  X.strokeRect(wx-1, wy-1, ww+2, wh+2);
+  X.strokeStyle = 'rgba(255,255,255,0.10)'; X.lineWidth = 1;
+  X.strokeRect(wx+2, wy+2, ww-4, wh-4);
+
+  // grab handle on the left pillar
+  const gx = (sw+wx)/2, g1 = wy+wh*0.24, g2 = wy+wh*0.60;
+  X.strokeStyle = '#2a2f34'; X.lineWidth = Math.max(6, W*0.0065);
+  X.beginPath(); X.moveTo(gx, g1); X.lineTo(gx, g2); X.stroke();
+  X.strokeStyle = '#79828a'; X.lineWidth = Math.max(3, W*0.0035);
+  X.beginPath(); X.moveTo(gx, g1); X.lineTo(gx, g2); X.stroke();
+  X.fillStyle = '#3d4348';
+  for (const gy of [g1, g2]) { X.beginPath(); X.arc(gx, gy, Math.max(3, W*0.0042), 0, Math.PI*2); X.fill(); }
+
+  // right pillar: 列車無線 unit and the 行路表 holder
+  const rx = wx+ww+(W-wx-ww)*0.14, rw = (W-wx-ww)*0.72;
+  X.fillStyle = '#1b1e21'; rrect(rx, wy+wh*0.08, rw, wh*0.3, 4); X.fill();
+  X.strokeStyle = '#3a4046'; X.lineWidth = 1; rrect(rx, wy+wh*0.08, rw, wh*0.3, 4); X.stroke();
+  X.fillStyle = '#0e1a10'; X.fillRect(rx+rw*0.12, wy+wh*0.11, rw*0.76, wh*0.05);   // LCD
+  X.textBaseline = 'middle';
+  text('CH 2', rx+rw*0.5, wy+wh*0.135, `${Math.max(7, Math.floor(rw*0.16))}px monospace`, '#7fe08a', 'center');
+  X.textBaseline = 'alphabetic';
+  X.fillStyle = '#3a4046';
+  for (let i=0; i<6; i++) X.fillRect(rx+rw*(0.14+(i%3)*0.26), wy+wh*(0.19+Math.floor(i/3)*0.045), rw*0.2, wh*0.03);
+  X.fillStyle = '#0f1113'; rrect(rx+rw*0.2, wy+wh*0.29, rw*0.6, wh*0.07, 3); X.fill();    // handset
+  X.strokeStyle = '#0f1113'; X.lineWidth = 2;                              // curly cord
+  X.beginPath();
+  for (let i=0; i<=14; i++) X.lineTo(rx+rw*0.5 + Math.sin(i*1.9)*rw*0.08, wy+wh*(0.36+i*0.012));
+  X.stroke();
+  const ky = wy+wh*0.6;                                                    // 行路表 clipboard
+  X.fillStyle = '#4a3a2a'; X.fillRect(rx, ky, rw, wh*0.34);
+  X.fillStyle = '#e4e2d8'; X.fillRect(rx+rw*0.08, ky+wh*0.03, rw*0.84, wh*0.29);
+  X.fillStyle = '#9aa0a4'; X.fillRect(rx+rw*0.3, ky-wh*0.01, rw*0.4, wh*0.035);
+  X.fillStyle = 'rgba(40,44,50,0.55)';
+  for (let i=0; i<10; i++) X.fillRect(rx+rw*0.14, ky+wh*(0.06+i*0.024), rw*(0.3+hash(i*13)*0.4), Math.max(1, wh*0.006));
+}
+
+// ============================================================
+// CONSOLE — the driver's desk everything sits on
+// ============================================================
+function drawConsole() {
+  const y0 = LAY.conY, h = LAY.conH;
+  const g = X.createLinearGradient(0, y0, 0, y0+h);
+  g.addColorStop(0,'#6a7178'); g.addColorStop(0.035,'#454b51');
+  g.addColorStop(0.18,'#2e3338'); g.addColorStop(1,'#131518');
+  X.fillStyle = g; X.fillRect(0, y0, W, h);
+  // desk lip
+  X.fillStyle = '#7d858c'; X.fillRect(0, y0, W, Math.max(2, H*0.003));
+  X.fillStyle = '#1b1e21'; X.fillRect(0, y0+Math.max(2,H*0.003), W, Math.max(1, H*0.0015));
+  // panel seams
+  X.strokeStyle = 'rgba(255,255,255,0.045)'; X.lineWidth = 1;
+  for (const fx of [0.235, 0.585]) {
+    X.beginPath(); X.moveTo(W*fx, y0+h*0.06); X.lineTo(W*fx, y0+h*0.94); X.stroke();
+  }
+  // hint bar
+  X.fillStyle = '#0a0b0c'; X.fillRect(0, LAY.hintY, W, H-LAY.hintY);
+  X.fillStyle = '#23262a'; X.fillRect(0, LAY.hintY, W, 1);
+}
+
+// ============================================================
+// MASTER CONTROLLER — 主幹制御器
+// E235 left-hand one-handle controller, seen from the driver's seat: a T-grip
+// on a shaft that rides in a slot across the controller box. The box top is
+// drawn in perspective (far end narrower), so forward = up = brake side.
+// ============================================================
+const NOTCHES = ['EB','B8','B7','B6','B5','B4','B3','B2','B1','N','P1','P2','P3','P4','P5'];
+
+// Where the controller box, its notch scale and the grip are — shared by the
+// renderer and the touch input that drags the handle.
+function ctrlGeom() {
+  const x0 = W*0.028, x1 = W*0.208, cx = (x0+x1)/2, bw = x1-x0;
+  const py = LAY.conY + LAY.conH*0.09, ph = LAY.conH*0.85, by = py + ph*0.94;
+  const yTop = py + ph*0.20, yBot = py + ph*0.88, stepY = (yBot-yTop)/(NOTCHES.length-1);
+  const idx = S.train.emergency ? 0 : 9 + S.train.lever, hy = yTop + idx*stepY;
+  const persp = y => 0.78 + 0.22*(y-py)/(by-py);   // far end of the box is smaller
+  const L = ph*0.13*persp(hy);                       // shaft length: the grip sits ahead of the slot
+  return {x0, x1, cx, bw, py, ph, by, yTop, yBot, stepY, idx, hy, gy: hy - L, L, persp};
+}
+function drawMasterController() {
+  const {x0, x1, cx, bw, py, ph, by, yTop, yBot, stepY, idx, persp} = ctrlGeom();
+  // controller box: a trapezoid top face plus a front lip
+  const tw = bw*0.70;
+  X.beginPath();
+  X.moveTo(cx-tw/2, py); X.lineTo(cx+tw/2, py); X.lineTo(x1, by); X.lineTo(x0, by); X.closePath();
+  const bg = X.createLinearGradient(0, py, 0, by);
+  bg.addColorStop(0,'#2a2e33'); bg.addColorStop(1,'#1b1e22');
+  X.fillStyle = bg; X.fill();
+  X.strokeStyle = '#4a5157'; X.lineWidth = 1.2; X.stroke();
+  X.fillStyle = '#101214'; X.fillRect(x0, by, bw, ph*0.05);
+
+  const fs = Math.max(8, Math.min(W*0.0078, H*0.0145));
+
+  // notch readout window, upper left of the box (the handle can hide the scale)
+  const nTxt = S.train.emergency ? 'EB' : NOTCHES[idx];
+  const rx = cx - tw/2 + fs*0.6, ry = py + fs*0.5;
+  X.fillStyle = '#05090a'; rrect(rx, ry, fs*3.2, fs*1.6, 2); X.fill();
+  X.strokeStyle = '#3a4046'; X.lineWidth = 1; rrect(rx, ry, fs*3.2, fs*1.6, 2); X.stroke();
+  X.textBaseline = 'middle';
+  text(nTxt, rx+fs*1.6, ry+fs*0.82, `${Math.floor(fs*1.1)}px monospace`,
+       idx===0 ? '#ff5a4a' : idx<9 ? '#ffc04a' : idx>9 ? '#8fe0ff' : '#d8dde2', 'center');
+
+  // slot
+  X.fillStyle = '#060707';
+  X.beginPath();
+  X.moveTo(cx-bw*0.022*persp(yTop), yTop-stepY*0.6); X.lineTo(cx+bw*0.022*persp(yTop), yTop-stepY*0.6);
+  X.lineTo(cx+bw*0.026, yBot+stepY*0.6);             X.lineTo(cx-bw*0.026, yBot+stepY*0.6);
+  X.closePath(); X.fill();
+
+  // engraved scale beside the slot, with zone bars (EB red, brake amber, power blue)
+  for (let i=0;i<NOTCHES.length;i++) {
+    const y = yTop + i*stepY, k = persp(y);
+    const zc = i===0 ? '#c8372c' : i<9 ? '#b5822a' : i>9 ? '#3d86b8' : '#9aa3ab';
+    X.fillStyle = zc; X.fillRect(cx + bw*0.06*k, y - stepY*0.42, Math.max(2, bw*0.012*k), stepY*0.84);
+    X.fillStyle = '#8c949b'; X.fillRect(cx + bw*0.035*k, y-0.5, bw*0.02*k, 1);
+    if (stepY >= fs*0.95 || [0, 5, 9, 14].includes(i))   // cramped scale: label the key notches only
+      text(NOTCHES[i], cx + bw*0.09*k, y, `${Math.floor(fs*1.1*k)}px monospace`, '#c9ced3', 'start');
+  }
+
+  // handle: rubber boot in the slot, shaft, then the T-grip ahead of it
+  const hy = yTop + idx*stepY, k = persp(hy), L = ph*0.13*k;
+  X.beginPath(); X.ellipse(cx, hy, bw*0.05*k, stepY*0.55, 0, 0, Math.PI*2);
+  X.fillStyle = '#0d0e10'; X.fill();
+  X.globalAlpha = 0.35;                               // the grip's shadow on the box
+  X.beginPath(); X.ellipse(cx+bw*0.03, hy-L*0.35, bw*0.17*k, stepY*0.7, 0, 0, Math.PI*2);
+  X.fillStyle = '#000'; X.fill(); X.globalAlpha = 1;
+  const sg = X.createLinearGradient(cx-bw*0.02, 0, cx+bw*0.02, 0);
+  sg.addColorStop(0,'#4d545a'); sg.addColorStop(0.45,'#b9c0c6'); sg.addColorStop(1,'#3a4046');
+  X.fillStyle = sg; X.fillRect(cx-bw*0.016*k, hy-L, bw*0.032*k, L);
+  const gw = bw*0.40*k, gh = Math.max(8, ph*0.075*k), gy = hy - L;
+  const gg = X.createLinearGradient(0, gy-gh/2, 0, gy+gh/2);
+  gg.addColorStop(0,'#5a6066'); gg.addColorStop(0.3,'#2a2e33'); gg.addColorStop(1,'#0c0d0f');
+  X.fillStyle = gg; rrect(cx-gw/2, gy-gh/2, gw, gh, gh/2); X.fill();
+  X.strokeStyle = 'rgba(255,255,255,0.12)'; X.lineWidth = 1;
+  X.beginPath(); X.moveTo(cx-gw/2+gh*0.4, gy-gh*0.28); X.lineTo(cx+gw/2-gh*0.4, gy-gh*0.28); X.stroke();
+  X.textBaseline = 'alphabetic';
+}
+
+// ============================================================
+// SPEEDOMETER — D-ATC 速度計. The permitted speed is a lit marker on the
+// LED ring outside the scale; an approaching lower limit lights a second,
+// blinking 予告 marker. No colour bands — the driver reads the marker.
+// ============================================================
+function drawSpeedometer() {
+  const cx = W*0.325, cy = LAY.conY + LAY.conH*0.50;
+  const r = Math.min(W*0.068, LAY.conH*0.42);
+  const speed = S.train.speed, limit = getSpeedLimit(S.train.position);
+  const nl = getNextCurveLimit(S.train.position);
+  const A0 = Math.PI*0.75, A1 = Math.PI*2.25, MAXV = 120;
+  const ang = v => A0 + (Math.min(v,MAXV)/MAXV)*(A1-A0);
+
+  // bezel and face
+  const bz = X.createLinearGradient(cx-r, cy-r, cx+r, cy+r);
+  bz.addColorStop(0,'#767d84'); bz.addColorStop(0.5,'#2b3036'); bz.addColorStop(1,'#5b6268');
+  X.beginPath(); X.arc(cx, cy, r*1.14, 0, Math.PI*2); X.fillStyle = bz; X.fill();
+  X.beginPath(); X.arc(cx, cy, r*1.03, 0, Math.PI*2); X.fillStyle = '#050607'; X.fill();
+  X.beginPath(); X.arc(cx, cy, r*0.90, 0, Math.PI*2);
+  const fg = X.createRadialGradient(cx, cy-r*0.4, r*0.1, cx, cy, r);
+  fg.addColorStop(0,'#16191c'); fg.addColorStop(1,'#08090b');
+  X.fillStyle = fg; X.fill();
+
+  // ATC LED ring — one dim lamp every 5 km/h
+  const blink = Math.floor(performance.now()/450) % 2 === 0;
+  const pre = nl && nl.limit < limit && nl.dist < 600 ? nl.limit : null;
+  for (let v=0; v<=MAXV; v+=5) {
+    const a = ang(v), on = v===limit, warn = v===pre && blink;
+    X.beginPath(); X.arc(cx+Math.cos(a)*r*0.965, cy+Math.sin(a)*r*0.965, r*0.028, 0, Math.PI*2);
+    X.fillStyle = on ? '#ffb02e' : warn ? '#ffe066' : '#2a2216'; X.fill();
+  }
+  for (const [v, col] of [[limit, '#ffb02e'], [pre, '#ffe066']]) {   // ▼ markers just inside the ring
+    if (v === null || (v === pre && !blink)) continue;
+    const a = ang(v), ca = Math.cos(a), sa = Math.sin(a), r0 = r*0.92, r1 = r*0.83;
+    X.beginPath();
+    X.moveTo(cx+ca*r1, cy+sa*r1);
+    X.lineTo(cx+ca*r0 - sa*r*0.05, cy+sa*r0 + ca*r*0.05);
+    X.lineTo(cx+ca*r0 + sa*r*0.05, cy+sa*r0 - ca*r*0.05);
+    X.closePath(); X.fillStyle = col;
+    X.shadowColor = col; X.shadowBlur = r*0.12; X.fill(); X.shadowBlur = 0;
+  }
+
+  // ticks and numerals
+  for (let v=0; v<=MAXV; v+=5) {
+    const a = ang(v), major = v%10===0, label = v%20===0;
+    X.strokeStyle = '#d6dbe0';
+    X.lineWidth = major ? 2 : 1;
+    const i0 = label ? r*0.66 : major ? r*0.70 : r*0.74;
+    X.beginPath();
+    X.moveTo(cx+Math.cos(a)*i0, cy+Math.sin(a)*i0);
+    X.lineTo(cx+Math.cos(a)*r*0.81, cy+Math.sin(a)*r*0.81);
+    X.stroke();
+    if (label) {
+      X.textBaseline = 'middle';
+      text(v, cx+Math.cos(a)*r*0.52, cy+Math.sin(a)*r*0.52,
+           `${Math.floor(r*0.15)}px "Helvetica Neue",Arial,sans-serif`, '#e4e8ec', 'center');
+      X.textBaseline = 'alphabetic';
+    }
+  }
+  text('km/h', cx, cy-r*0.30, `${Math.floor(r*0.11)}px "Helvetica Neue",Arial,sans-serif`, '#7c858d', 'center');
+  X.textBaseline = 'middle';
+  text('ATC', cx, cy+r*0.30, `${Math.floor(r*0.10)}px monospace`, '#a8742a', 'center');
+  // small LCD readout, as on the E235 meter
+  X.fillStyle = '#0c1012'; rrect(cx-r*0.22, cy+r*0.40, r*0.44, r*0.19, 2); X.fill();
+  text(String(Math.round(speed)).padStart(3,' '), cx, cy+r*0.50,
+       `${Math.floor(r*0.15)}px monospace`, '#cfd6dc', 'center');
+  X.textBaseline = 'alphabetic';
+
+  // needle
+  const a = ang(speed);
+  X.strokeStyle = '#f4f6f8'; X.lineWidth = Math.max(2, r*0.028); X.lineCap = 'round';
+  X.beginPath();
+  X.moveTo(cx-Math.cos(a)*r*0.16, cy-Math.sin(a)*r*0.16);
+  X.lineTo(cx+Math.cos(a)*r*0.80, cy+Math.sin(a)*r*0.80);
+  X.stroke(); X.lineCap = 'butt';
+  X.beginPath(); X.arc(cx, cy, r*0.08, 0, Math.PI*2); X.fillStyle = '#30363c'; X.fill();
+  // glass glare
+  X.globalAlpha = 0.07; X.beginPath();
+  X.ellipse(cx-r*0.18, cy-r*0.42, r*0.62, r*0.30, -0.35, 0, Math.PI*2);
+  X.fillStyle = '#fff'; X.fill(); X.globalAlpha = 1;
+}
+
+// ============================================================
+// AIR GAUGES — BC / MR, scaled 0–10 (×100 kPa)
+// ============================================================
+function drawGauge(cx, cy, r, label, frac, col) {
+  X.beginPath(); X.arc(cx, cy, r*1.16, 0, Math.PI*2); X.fillStyle = '#2b3036'; X.fill();
+  X.beginPath(); X.arc(cx, cy, r, 0, Math.PI*2); X.fillStyle = '#0b0d0f'; X.fill();
+  const A0 = Math.PI*0.78, A1 = Math.PI*2.22;
+  X.textBaseline = 'middle';
+  for (let i=0;i<=10;i++) {
+    const a = A0 + (i/10)*(A1-A0);
+    X.strokeStyle = '#c4cacf'; X.lineWidth = i%2===0 ? 1.4 : 0.7;
+    X.beginPath();
+    X.moveTo(cx+Math.cos(a)*r*(i%2 ? 0.76 : 0.70), cy+Math.sin(a)*r*(i%2 ? 0.76 : 0.70));
+    X.lineTo(cx+Math.cos(a)*r*0.88, cy+Math.sin(a)*r*0.88);
+    X.stroke();
+    if (i%2===0 && r > 22)
+      text(i, cx+Math.cos(a)*r*0.52, cy+Math.sin(a)*r*0.52, `${Math.floor(r*0.22)}px monospace`, '#aab1b7', 'center');
+  }
+  text(label, cx, cy+r*0.42, `${Math.floor(Math.max(7, r*0.2))}px monospace`, '#7c858d', 'center');
+  const a = A0 + Math.max(0, Math.min(1, frac))*(A1-A0);
+  X.strokeStyle = col; X.lineWidth = Math.max(1.5, r*0.06); X.lineCap = 'round';
+  X.beginPath(); X.moveTo(cx-Math.cos(a)*r*0.15, cy-Math.sin(a)*r*0.15);
+  X.lineTo(cx+Math.cos(a)*r*0.80, cy+Math.sin(a)*r*0.80); X.stroke(); X.lineCap = 'butt';
+  X.beginPath(); X.arc(cx, cy, r*0.10, 0, Math.PI*2); X.fillStyle = '#4b5258'; X.fill();
+  text('×100kPa', cx, cy+r*1.45, `${Math.floor(Math.max(7, r*0.24))}px monospace`, '#5f676e', 'center');
+  X.textBaseline = 'alphabetic';
+}
+
+function drawGauges() {
+  const cy = LAY.conY + LAY.conH*0.33;
+  const r = Math.min(W*0.026, LAY.conH*0.155);
+  const t = S.train;
+  const bc = t.emergency ? 0.62 : t.lever < 0 ? (-t.lever/8)*0.48 : 0.0;
+  drawGauge(W*0.315+W*0.135, cy, r, 'BC', bc, '#e8553f');
+  drawGauge(W*0.315+W*0.215, cy, r, 'MR', 0.82 + Math.sin(S.elapsedTime*0.7)*0.02, '#eef1f3');
+}
+
+// ============================================================
+// INDICATOR LAMPS — small panel lamps; label engraved on the panel below.
+// Unlit lamps still show their coloured glass, dimly.
+// ============================================================
+function drawLamps() {
+  const t = S.train;
+  const limit = getSpeedLimit(S.train.position);
+  const lamps = [
+    ['ATC',  S.phase!=='start',      [244,240,224]],
+    ['戸閉',  S.phase!=='stopped' && !(S.phase==='departing' && S.boardingTime > DEPART_T-1.2), [255,171,61]],
+    ['力行',  t.lever>0 && !t.emergency, [120,224,110]],
+    ['制動',  t.lever<0 && !t.emergency, [255,214,64]],
+    ['過速',  t.speed > limit,        [255,72,58]],
+    ['非常',  t.emergency,            [255,72,58]],
+  ];
+  const x0 = W*0.425, x1 = W*0.582, y0 = LAY.conY + LAY.conH*0.66;
+  const n = lamps.length, cw = (x1-x0)/n, lw = cw*0.62, lh = LAY.conH*0.075;
+  const fs = Math.max(7, Math.min(W*0.0072, H*0.0135));
+  X.fillStyle = '#16191c'; rrect(x0-cw*0.12, y0-lh*0.7, (x1-x0)+cw*0.24, lh*2.9, 4); X.fill();
+  X.strokeStyle = '#3a4046'; X.lineWidth = 1; rrect(x0-cw*0.12, y0-lh*0.7, (x1-x0)+cw*0.24, lh*2.9, 4); X.stroke();
+  lamps.forEach((l, i) => {
+    const x = x0 + i*cw + (cw-lw)/2, c = l[2];
+    X.fillStyle = '#050607'; rrect(x-2, y0-2, lw+4, lh+4, 3); X.fill();      // bezel
+    const g = X.createLinearGradient(0, y0, 0, y0+lh);
+    if (l[1]) {
+      g.addColorStop(0, `rgb(${Math.min(255,c[0]+40)},${Math.min(255,c[1]+40)},${Math.min(255,c[2]+40)})`);
+      g.addColorStop(1, `rgb(${c[0]},${c[1]},${c[2]})`);
+      X.shadowColor = `rgb(${c[0]},${c[1]},${c[2]})`; X.shadowBlur = lh*0.9;
+    } else {
+      g.addColorStop(0, `rgb(${c[0]*0.22|0},${c[1]*0.22|0},${c[2]*0.22|0})`);
+      g.addColorStop(1, `rgb(${c[0]*0.12|0},${c[1]*0.12|0},${c[2]*0.12|0})`);
+    }
+    X.fillStyle = g; rrect(x, y0, lw, lh, 2); X.fill(); X.shadowBlur = 0;
+    X.fillStyle = 'rgba(255,255,255,0.10)'; X.fillRect(x+2, y0+1, lw-4, lh*0.3);   // glass sheen
+    X.textBaseline = 'middle';
+    text(l[0], x+lw/2, y0+lh*1.75, `${Math.floor(fs)}px ${JP}`, '#c3c9ce', 'center');
+    X.textBaseline = 'alphabetic';
+  });
+}
+
+// ============================================================
+// TIMS MONITOR — 列車情報管理装置. Dense, small type like the real screen:
+// header (列番・行先・時刻), the station timetable, the next-station panel,
+// the 11-car consist with door state, and a one-line message bar.
+// ============================================================
+function clockTime(s) {
+  const t = Math.floor(ENV.start + s);   // lap departs 品川 at ENV.start
+  return [Math.floor(t/3600)%24, Math.floor(t/60)%60, t%60].map(v => String(v).padStart(2,'0')).join(':');
+}
+
+// big: drawn enlarged over the windscreen (tap the TIMS to toggle). On a small
+// screen the panel in the desk switches to a compact layout with larger type.
+function drawTims(big) {
+  const x = big ? LAY.winX + LAY.winW*0.12 : W*0.60, y = big ? LAY.winY + LAY.winH*0.06 : LAY.conY + LAY.conH*0.09;
+  const w = big ? LAY.winW*0.76 : W*0.375, h = big ? LAY.winH*0.88 : LAY.conH*0.85;
+  if (!big && S.phase !== 'start') hit(x, y, w, h, () => { TIMS_BIG = true; });
+  X.fillStyle = '#0d0f11'; rrect(x-6, y-6, w+12, h+12, 6); X.fill();
+  X.strokeStyle = '#3d434a'; X.lineWidth = 1.5; rrect(x-6, y-6, w+12, h+12, 6); X.stroke();
+  X.fillStyle = '#04080c'; X.fillRect(x, y, w, h);
+
+  const compact = !big && h < 170;
+  const fs = compact ? Math.max(9, h*0.1) : Math.max(8, Math.min(w*0.0197, h*0.06));
+  const F = (k, jp, b) => `${b?'bold ':''}${Math.floor(fs*k)}px ${jp ? JP : 'monospace'}`;
+  // Target is always the station after the current one — stable while stopped,
+  // short of the line and past it (getNextStationIndex is not,
+  // since it flips the moment the stop line is crossed).
+  const si = (S.currentStation+1) % STATIONS.length;
+  let dist = STATIONS[si].pos - loopPos(S.train.position);
+  if (dist <= 0) dist += TOTAL_LOOP;
+  const over = dist > TOTAL_LOOP - 200;   // target line is just BEHIND us (overrun)
+  const overBy = over ? TOTAL_LOOP - dist : 0;
+  const limit = getSpeedLimit(S.train.position);
+  const nl = getNextCurveLimit(S.train.position);
+  const late = S.elapsedTime - stationDueTime(si);
+  // phase message
+  let msg = '', col = '#7ee0a8';
+  switch (S.phase) {
+    case 'departing':   msg = S.boardingTime > DEPART_T-1.2 ? '戸閉中' : '運行指示灯 点灯待ち'; col = '#7ee0a8'; break;
+    case 'running':     msg = '走行中'; col = '#6f8ea3'; break;
+    case 'approaching': msg = '▼ 減速してください'; col = '#ffd166'; break;
+    case 'stopped':     msg = `停車中 — 成績を確認して 確定 (${TOUCH ? 'タップ' : 'Enter'})`; col = '#5ac8fa'; break;
+  }
+  if (S.phase==='approaching' && S.train.speed===0 && !over && dist > 10)
+    { msg = `停止位置まで あと ${Math.round(dist)} m — 前進してください`; col = '#5ac8fa'; }
+  if (nl && nl.limit < limit && nl.dist < 300 && S.train.speed > nl.limit + 2)
+    { msg = `▼ この先 カーブ制限 ${nl.limit} km/h (${Math.round(nl.dist)}m)`; col = '#ffd166'; }
+  if (S.train.speed > limit) { msg = '⚠ 速度超過'; col = '#ff6b5e'; }
+
+  X.textBaseline = 'middle';
+  // header
+  const hh = fs*1.8;
+  X.fillStyle = '#0e2a3a'; X.fillRect(x, y, w, hh);
+  X.fillStyle = '#2f6f8c'; X.fillRect(x, y+hh, w, 1);
+  X.fillStyle = '#9acd32'; X.fillRect(x+fs*0.5, y+hh*0.22, fs*0.35, hh*0.56);   // うぐいす色 line mark
+  text(`山手線 ${ROUTE.name}`, x+fs*1.2, y+hh/2, F(0.95, true), '#e6f2fa');
+  text(`列番 ${ROUTE.trainNo}`, x+w*0.42, y+hh/2, F(0.95), '#bfe3f5');
+  text(clockTime(S.elapsedTime), x+w-fs*0.6, y+hh/2, F(1.0, false, true), '#e6f2fa', 'end');
+  if (compact) {                       // next stop, distance and the three numbers that matter
+    const by = y + hh + fs*0.3, bh = h - hh - fs*2.1, cw = w/3;
+    text(STATIONS[si].name, x+fs*0.5, by+bh*0.3, F(1.35, true, true), '#ffffff');
+    const dtxt = over ? `行き過ぎ ${Math.round(overBy)} m` : dist < 1000 ? Math.round(dist)+' m' : (dist/1000).toFixed(2)+' km';
+    text(dtxt, x+w-fs*0.5, by+bh*0.3, F(1.25, false, true), over ? '#ff9f8a' : dist < 300 ? '#ffd166' : '#ffffff', 'end');
+    [['制限', `${limit}`, S.train.speed > limit ? '#ff6b5e' : '#ffffff'],
+     ['次制限', nl && nl.limit < limit ? `${nl.limit}/${Math.round(nl.dist)}m` : '---', '#ffd166'],
+     ['遅れ', late > 0 ? `+${Math.round(late)}秒` : '定時', late > 15 ? '#ff9f8a' : '#7ee0a8']]
+      .forEach(([k, v, c], i) => {
+        text(k, x + i*cw + fs*0.5, by+bh*0.78, F(0.75, true), '#7fa4b8');
+        text(v, x + (i+1)*cw - fs*0.5, by+bh*0.78, F(1.0, true, true), c, 'end');
+      });
+    drawTimsMessage();
+    X.textBaseline = 'alphabetic';
+    return;
+  }
+
+  // timetable list (left)
+  const lx = x + fs*0.5, lw = w*0.50, ty = y + hh + fs*0.5;
+  const rh = (h - hh - fs*2.6) / 8.6;   // rows share whatever height the screen has
+  X.fillStyle = '#0b1c26'; X.fillRect(lx, ty, lw, rh);
+  text('駅名', lx+fs*1.6, ty+rh/2, F(0.8, true), '#7fa4b8');
+  text('着時刻', lx+lw*0.55, ty+rh/2, F(0.8, true), '#7fa4b8');
+  text('制限', lx+lw-fs*0.4, ty+rh/2, F(0.8, true), '#7fa4b8', 'end');
+  for (let r = 0; r < 6; r++) {
+    const id = (S.currentStation + r) % STATIONS.length, ry = ty + rh*(r+1);
+    const done = r === 0, cur = id === si;
+    if (cur) { X.fillStyle = '#123e52'; X.fillRect(lx, ry, lw, rh); }
+    X.fillStyle = '#132a36'; X.fillRect(lx, ry+rh-1, lw, 1);
+    if (cur) text('▶', lx+fs*0.3, ry+rh/2, F(0.8), '#ffd166');
+    const col = done ? '#4f6a78' : cur ? '#ffffff' : '#cfe3ee';
+    text(STATIONS[id].name, lx+fs*1.6, ry+rh/2, F(0.95, true, cur), col);
+    text(done ? '発車済' : clockTime(stationDueTime(id)), lx+lw*0.55, ry+rh/2, F(0.9, done), col);
+    // tightest curve limit on the run into this station
+    const prevPos = STATIONS[(id + STATIONS.length - 1) % STATIONS.length].pos;
+    let lim = 90;
+    for (const c of CURVES) if (c[0] >= prevPos && c[0] < (STATIONS[id].pos || TOTAL_LOOP)) lim = Math.min(lim, curveLimitOf(c[2]));
+    text(done ? '' : lim, lx+lw-fs*0.4, ry+rh/2, F(0.9), lim < 90 ? '#ffd166' : col, 'end');
+  }
+
+  // next-station panel (right)
+  const px = lx + lw + fs*0.6, pw = x + w - fs*0.5 - px;
+  X.fillStyle = '#0b1c26'; X.fillRect(px, ty, pw, rh);
+  text('次停車駅', px+fs*0.4, ty+rh/2, F(0.8, true), '#7fa4b8');
+  text(`${STATIONS[si].stopTime}秒停車`, px+pw-fs*0.4, ty+rh/2, F(0.8, true), '#7fa4b8', 'end');
+  text(STATIONS[si].name, px+fs*0.4, ty+rh*1.85, F(1.6, true, true), '#ffffff');
+  text(STATIONS[si].nameEn, px+fs*0.4, ty+rh*2.75, F(0.75), '#7fa4b8');
+  const dtxt = over ? `-${Math.round(overBy)} m`
+             : dist < 1000 ? Math.round(dist)+' m' : (dist/1000).toFixed(2)+' km';
+  text(over ? '行き過ぎ' : '残距離', px+pw-fs*0.4, ty+rh*1.35, F(0.75, true), over ? '#ff9f8a' : '#7fa4b8', 'end');
+  text(dtxt, px+pw-fs*0.4, ty+rh*2.35, F(1.35, false, true),
+       over ? '#ff9f8a' : dist < 300 ? '#ffd166' : '#ffffff', 'end');
+  // small data cells
+  const cells = [
+    ['制限', `${limit}`, S.train.speed > limit ? '#ff6b5e' : '#ffffff'],
+    ['次制限', nl && nl.limit < limit ? `${nl.limit}/${Math.round(nl.dist)}m` : '---', '#ffd166'],
+    ['遅れ', late > 0 ? `+${Math.round(late)}秒` : '定時', late > 15 ? '#ff9f8a' : '#7ee0a8'],
+    ['得点', `${S.totalScore}`, '#ffd166'],
+  ];
+  const cy0 = ty + rh*3.4, cwid = pw/2;
+  cells.forEach((c, i) => {
+    const cx = px + (i%2)*cwid, cyy = cy0 + Math.floor(i/2)*rh*1.75;
+    X.strokeStyle = '#1d3c4c'; X.lineWidth = 1; X.strokeRect(cx+1, cyy, cwid-2, rh*1.6);
+    text(c[0], cx+fs*0.4, cyy+rh*0.45, F(0.72, true), '#7fa4b8');
+    text(c[1], cx+cwid-fs*0.5, cyy+rh*1.08, F(0.95, true, true), c[2], 'end');
+  });
+
+  // consist: 11 cars, 1号車 leading on the left; doors open while stopped
+  const ky = ty + rh*7.55, kh = rh*0.9, kx = lx + fs*2.6, kw = (x + w - fs*0.5 - kx)/11;
+  text('編成', lx, ky+kh/2, F(0.8, true), '#7fa4b8');
+  const open = S.phase === 'stopped';
+  for (let c = 0; c < 11; c++) {
+    const cx = kx + c*kw;
+    X.fillStyle = open ? '#4a3510' : '#0f2a1c';
+    X.fillRect(cx+1, ky, kw-2, kh);
+    X.strokeStyle = open ? '#ffab3d' : '#3fae6a'; X.lineWidth = 1; X.strokeRect(cx+1.5, ky+0.5, kw-3, kh-1);
+    text(c+1, cx+kw/2, ky+kh/2, F(0.72), open ? '#ffcf8a' : '#9fe0b8', 'center');
+  }
+
+  drawTimsMessage();
+  X.textBaseline = 'alphabetic';
+  function drawTimsMessage() {
+  const my = y + h - fs*1.7;
+  X.fillStyle = '#0b1c26'; X.fillRect(x, my, w, fs*1.7);
+  X.fillStyle = '#2f6f8c'; X.fillRect(x, my, w, 1);
+  text(msg, x+w/2, my+fs*0.85, F(0.95, true), col, 'center');
+  }
+}
+
+// ============================================================
+// SECTION SUMMARY — shown on arrival; the run waits for 確定 (Enter or click)
+// ============================================================
+function drawStopSummary() {
+  if (S.phase!=='stopped' || S.stationsVisited.length===0) return;
+  const v = S.stationsVisited[S.stationsVisited.length-1];
+  const N = STATIONS.length, from = STATIONS[(v.stationId + N - 1) % N].name;
+  const bw = Math.min(LAY.winW*0.5, 560);
+  const fs = Math.max(10, Math.min(LAY.winH*0.045, bw*0.034)), pad = fs*1.2;
+  const bh = fs*21.6;   // header, four rows, totals, 確定 — sized from the text, so nothing overlaps
+  const bx = LAY.winX + (LAY.winW - bw)/2, by = LAY.winY + Math.max(4, (LAY.winH - bh)/2);
+  X.fillStyle = 'rgba(0,0,0,0.35)'; X.fillRect(LAY.winX, LAY.winY, LAY.winW, LAY.winH);
+  X.fillStyle = 'rgba(4,10,14,0.94)'; rrect(bx, by, bw, bh, 8); X.fill();
+  X.strokeStyle = '#5ac8fa'; X.lineWidth = 2; rrect(bx, by, bw, bh, 8); X.stroke();
+  const F = (k, b, mono) => `${b ? 'bold ' : ''}${Math.floor(fs*k)}px ${mono ? 'monospace' : JP}`;
+  X.textBaseline = 'middle';
+  X.fillStyle = 'rgba(90,200,250,0.12)'; X.fillRect(bx+1, by+1, bw-2, fs*3.2);
+  text(`${v.name}駅 到着`, bx+pad, by+fs*1.25, F(1.3, true), '#eaf6ff');
+  text(`区間 ${from} → ${v.name}`, bx+pad, by+fs*2.45, F(0.85), '#8fb3c6');
+  text('区間成績', bx+bw-pad, by+fs*1.25, F(0.85), '#8fb3c6', 'right');
+  // the details behind each score
+  const e = v.stopErr, ea = Math.abs(e).toFixed(1);
+  const stopTxt = e < 0 ? `停止線を ${ea} m 行き過ぎ（−${OVERRUN_PENALTY}）` : Math.abs(e) < 0.3 ? '停止線ぴったり' : `停止線の ${ea} m 手前`;
+  const dt = Math.round(v.segTime - v.segDue);
+  const timeTxt = `区間 ${formatTime(v.segTime)} ／ 予定 ${formatTime(v.segDue)}（${dt > 0 ? `${dt}秒遅れ` : dt < 0 ? `${-dt}秒早着` : '定時'}）`;
+  const rows = [
+    ['停止精度', v.scores.stop, 40, stopTxt, e < 0],
+    ['速度遵守', v.scores.speed, 30, v.speedV ? `制限超過 ${v.speedV} 回` : '制限超過なし', v.speedV > 0],
+    ['乗り心地', v.scores.comfort, 20, v.comfortV ? `急な衝動 ${v.comfortV} 回` : '衝動なし', v.comfortV > 0],
+    ['定時性',   v.scores.time, 10, timeTxt, dt > 5],
+  ];
+  const rh = fs*2.6;
+  rows.forEach((r, i) => {
+    const y = by + fs*4.4 + i*rh;
+    const c = r[1] >= r[2]*0.9 ? '#7ee0a8' : r[1] >= r[2]*0.5 ? '#ffd166' : '#ff6b5e';
+    text(r[0], bx+pad, y, F(1.0, true), '#d6e4ec');
+    text(r[3], bx+pad, y+fs*1.1, F(0.78), r[4] ? '#ffb38a' : '#7f97a6');
+    text(`${r[1]}`, bx+bw-pad-fs*2.4, y, F(1.25, true, true), c, 'right');
+    text(`/${r[2]}`, bx+bw-pad, y, F(0.85, false, true), '#7f97a6', 'right');
+    X.fillStyle = '#16303d'; X.fillRect(bx+pad, y+fs*1.8, bw-pad*2, 1);
+  });
+  const yb = by + fs*4.4 + 4*rh;
+  text('区間得点', bx+pad, yb, F(1.05, true), '#eaf6ff');
+  text(`${v.total}/100`, bx+bw-pad, yb, F(1.3, true, true), '#ffd166', 'right');
+  text(`累計 ${S.totalScore} 点 ・ ${S.stationsVisited.length} 駅`, bx+pad, yb+fs*1.5, F(0.85), '#8fb3c6');
+  // 確定
+  const last = v.stationId === 0 && S.stationsVisited.length > 1;
+  const kw = fs*9, kh = fs*2.3, kx = bx + (bw-kw)/2, ky = by + bh - kh - fs*0.9;
+  const pulse = 0.75 + 0.25*Math.sin(performance.now()/300);
+  X.fillStyle = `rgba(90,200,250,${0.22*pulse})`; rrect(kx, ky, kw, kh, 6); X.fill();
+  X.strokeStyle = '#5ac8fa'; X.lineWidth = 2; rrect(kx, ky, kw, kh, 6); X.stroke();
+  text(last ? '確定（結果へ）' : '確定', kx+kw/2, ky+kh*0.42, F(1.1, true), '#eaf6ff', 'center');
+  text(TOUCH ? 'タップ' : 'Enter', kx+kw/2, ky+kh*0.8, F(0.6, false, true), '#8fb3c6', 'center');
+  hit(kx, ky, kw, kh, departFromStation);
+  X.textBaseline = 'alphabetic';
+}
+
+// 運行指示灯: pops up after 確定; driving (and the section clock) starts when it lights
+function drawDepartSignal() {
+  const lit = S.phase !== 'departing';
+  if (!(S.phase === 'departing' || S.goFlash > 0)) return;
+  const a = lit ? Math.min(1, S.goFlash/0.6) : 1;
+  const bw = Math.min(LAY.winW*0.24, 300), bh = bw*0.62;
+  const bx = LAY.winX + (LAY.winW - bw)/2, by = LAY.winY + LAY.winH*0.12;
+  const fs = bw*0.065;
+  X.globalAlpha = a;
+  X.fillStyle = 'rgba(6,10,14,0.9)'; rrect(bx, by, bw, bh, 8); X.fill();
+  X.strokeStyle = lit ? '#46e07a' : '#3a4a56'; X.lineWidth = 2; rrect(bx, by, bw, bh, 8); X.stroke();
+  X.textBaseline = 'middle';
+  text('運行指示灯', bx+bw/2, by+fs*1.5, `bold ${Math.floor(fs*1.15)}px ${JP}`, '#cfdbe3', 'center');
+  const cx = bx+bw/2, cy = by+bh*0.52, r = bh*0.2;
+  X.fillStyle = '#1a1f24'; X.beginPath(); X.arc(cx, cy, r*1.25, 0, Math.PI*2); X.fill();   // bezel
+  if (lit) {
+    X.shadowColor = '#46e07a'; X.shadowBlur = r*1.6;
+    const g = X.createRadialGradient(cx-r*0.3, cy-r*0.3, r*0.1, cx, cy, r);
+    g.addColorStop(0, '#d8ffe4'); g.addColorStop(0.5, '#4fe884'); g.addColorStop(1, '#1d9a4a');
+    X.fillStyle = g;
+  } else X.fillStyle = '#18331f';
+  X.beginPath(); X.arc(cx, cy, r, 0, Math.PI*2); X.fill();
+  X.shadowBlur = 0;
+  const msg = lit ? '点灯 — 運転開始' : S.boardingTime > DEPART_T-1.2 ? '戸閉中…' : '点灯待ち…';
+  text(msg, cx, by+bh-fs*1.5, `bold ${Math.floor(fs*1.05)}px ${JP}`, lit ? '#7ee0a8' : '#8fa3b0', 'center');
+  X.textBaseline = 'alphabetic';
+  X.globalAlpha = 1;
+}
+
+// ============================================================
+// HINT BAR
+// ============================================================
+// Shown on the title screen and for the first seconds of a run, then it fades
+// out of the way; H brings it back (and pins it).
+const HINT = { until: 0, pinned: false };
+function drawHintBar() {
+  const y = LAY.hintY, h = H-LAY.hintY;
+  const fs = Math.max(9, Math.min(W*0.0105, h*0.42));
+  const items = ['↑ / W  ブレーキ (最上段 EB)', '↓ / S  力行', 'Space  非常制動', 'R  ノッチ戻し', 'Enter  確定',
+                 'D / T / Y / Q  方向・時間帯・天候・画質', 'M  音声'];
+  if (TOUCH) return;                 // touch devices get the gesture guide instead
+  const a = S.phase === 'start' || HINT.pinned ? 1 : Math.max(0, Math.min(1, (HINT.until - performance.now())/1000));
+  const step = W/(items.length+1);
+  X.textBaseline = 'middle';
+  if (a > 0) {
+    X.globalAlpha = a;
+    items.forEach((t, i) => text(t, step*(i+1), y+h*0.5, `${Math.floor(fs*0.92)}px ${JP}`, '#7b848c', 'center'));
+    X.globalAlpha = 1;
+  }
+  if (a < 1) text('H  操作説明', W - fs*1.5, y+h*0.5, `${Math.floor(fs*0.85)}px ${JP}`,
+                  `rgba(110,118,126,${(0.6*(1-a)).toFixed(2)})`, 'right');
+  X.textBaseline = 'alphabetic';
+}
+
+// ============================================================
+// TITLE PANEL (start screen)
+// ============================================================
+const IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function drawTitle() {
+  const x = LAY.winX + LAY.winW*0.1, w = LAY.winW*0.8;
+  const y = LAY.winY + LAY.winH*0.08, h = LAY.winH*0.84;
+  X.fillStyle = 'rgba(4,10,14,0.85)'; rrect(x, y, w, h, 8); X.fill();
+  X.strokeStyle = '#32d74b'; X.lineWidth = 2; rrect(x, y, w, h, 8); X.stroke();
+  X.textBaseline = 'middle';
+  text('山手線運転シミュレーター', x+w/2, y+h*0.16, `bold ${Math.floor(Math.min(h*0.12, w*0.06))}px ${JP}`, '#32d74b', 'center');
+  text('YAMANOTE LINE TRAIN SIMULATOR', x+w/2, y+h*0.27, `${Math.floor(h*0.045)}px monospace`, '#7ea4c2', 'center');
+  text(STATIONS.slice(0, 6).map(st => st.name).join(' → ') + ' → … 全30駅',
+       x+w/2, y+h*0.36, `${Math.floor(h*0.045)}px ${JP}`, '#9fb4c2', 'center');
+  // options: tap a button (or press its key) to cycle it
+  const opts = [
+    ['方向', ROUTE.name, 'D', nextRoute],
+    ['時間帯', ENV.T.name, 'T', () => ENV.cycle('time')],
+    ['天候', ENV.Wx.name, 'Y', () => ENV.cycle('wx')],
+    ['画質', {auto: '自動', high: '高', low: '低'}[QUALITY], 'Q', cycleQuality],
+  ];
+  const bw = w*0.2, bh = h*0.15, gap = w*0.025, bx0 = x + (w - (bw*4 + gap*3))/2, by = y + h*0.45;
+  const fs = Math.min(bh*0.3, bw*0.13);
+  opts.forEach(([label, val, key, act], i) => {
+    const bx = bx0 + i*(bw+gap);
+    X.fillStyle = '#10232e'; rrect(bx, by, bw, bh, 6); X.fill();
+    X.strokeStyle = '#3f7d99'; X.lineWidth = 1.5; rrect(bx, by, bw, bh, 6); X.stroke();
+    text(TOUCH ? label : `${key}  ${label}`, bx+bw/2, by+bh*0.3, `${Math.floor(fs*0.85)}px ${JP}`, '#8fb3c6', 'center');
+    text(val, bx+bw/2, by+bh*0.68, `bold ${Math.floor(fs*1.15)}px ${JP}`, '#eaf6ff', 'center');
+    hit(bx, by, bw, bh, act);
+  });
+  // start
+  const sw = w*0.36, sh = h*0.15, sx = x + (w-sw)/2, sy = y + h*0.68;
+  X.globalAlpha = Math.sin(performance.now()/320)*0.25 + 0.75;
+  X.fillStyle = '#3a2f0a'; rrect(sx, sy, sw, sh, 8); X.fill();
+  X.strokeStyle = '#ffd166'; X.lineWidth = 2; rrect(sx, sy, sw, sh, 8); X.stroke();
+  text(TOUCH ? 'タップして開始' : 'Press ENTER to start', sx+sw/2, sy+sh/2,
+       `bold ${Math.floor(Math.min(sh*0.42, sw*0.08))}px ${TOUCH ? JP : 'monospace'}`, '#ffd166', 'center');
+  X.globalAlpha = 1;
+  hit(sx, sy, sw, sh, primaryAction);
+  // iPhone/iPad Safari can't go full screen from a page — a home-screen icon can
+  if (TOUCH && IOS && !navigator.standalone)
+    text('全画面で遊ぶには：共有ボタン →「ホーム画面に追加」', x+w/2, y+h*0.92, `${Math.floor(h*0.042)}px ${JP}`, '#9fb4c2', 'center');
+  X.textBaseline = 'alphabetic';
+}
+
+// ============================================================
+// TOUCH CONTROLS — phones and tablets, landscape only. The master controller
+// is driven by dragging its grip (see the pointer input); these add a 非常
+// button, sound / help buttons and a gesture guide in place of the key list.
+// ============================================================
+function drawTouchUI() {
+  if (!TOUCH || S.phase === 'start' || S.phase === 'result') return;
+  // 非常 — big red button at the lower right of the windscreen, under the right thumb
+  const r = Math.max(26, Math.min(W*0.045, LAY.winH*0.13));
+  const ex = LAY.winX + LAY.winW - r*1.5, ey = LAY.winB - r*1.5;
+  X.fillStyle = 'rgba(0,0,0,0.45)'; X.beginPath(); X.arc(ex, ey, r*1.12, 0, Math.PI*2); X.fill();
+  const g = X.createRadialGradient(ex-r*0.3, ey-r*0.3, r*0.1, ex, ey, r);
+  g.addColorStop(0, S.train.emergency ? '#ff8a7a' : '#e0473a'); g.addColorStop(1, '#8e1c14');
+  X.fillStyle = g; X.beginPath(); X.arc(ex, ey, r, 0, Math.PI*2); X.fill();
+  X.textBaseline = 'middle';
+  text('非常', ex, ey, `bold ${Math.floor(r*0.55)}px ${JP}`, '#fff', 'center');
+  hit(ex-r*1.1, ey-r*1.1, r*2.2, r*2.2, () => { if (canDrive()) emergencyBrake(); });
+  // sound and help, top right of the windscreen
+  const s = Math.max(30, r*0.9), iy = LAY.winY + s*0.3;
+  [[AUDIO.on ? '🔊' : '🔇', () => AUDIO.toggle()], ['?', () => { HINT.pinned = !HINT.pinned; HINT.until = 0; }]]
+    .forEach(([glyph, act], i) => {
+      const ix = LAY.winX + LAY.winW - (i+1)*(s*1.25);
+      X.fillStyle = 'rgba(6,10,14,0.6)'; rrect(ix, iy, s, s, 6); X.fill();
+      text(glyph, ix+s/2, iy+s/2, `bold ${Math.floor(s*0.5)}px ${JP}`, '#eaf6ff', 'center');
+      hit(ix, iy, s, s, act);
+    });
+  X.textBaseline = 'alphabetic';
+  // gesture guide: for the first seconds of a run, or while ? is on
+  const a = HINT.pinned ? 1 : Math.max(0, Math.min(1, (HINT.until - performance.now())/1000));
+  if (a <= 0 || TIMS_BIG) return;
+  const lines = ['主幹制御器の握りを上下にドラッグ — 上：ブレーキ ／ 下：力行',
+                 '握りの上下をタップ — 1 段ずつ　　握りをダブルタップ — N',
+                 '右下の「非常」 — 非常ブレーキ　　TIMS をタップ — 拡大表示'];
+  const fs = Math.max(11, Math.min(W*0.016, LAY.winH*0.055)), pw = fs*26, ph = fs*5.2;
+  const px = LAY.winX + (LAY.winW - pw)/2, py = LAY.winY + LAY.winH*0.06;
+  X.globalAlpha = a;
+  X.fillStyle = 'rgba(4,10,14,0.85)'; rrect(px, py, pw, ph, 8); X.fill();
+  X.strokeStyle = '#5ac8fa'; X.lineWidth = 1.5; rrect(px, py, pw, ph, 8); X.stroke();
+  X.textBaseline = 'middle';
+  lines.forEach((t, i) => text(t, px+pw/2, py+fs*(1.3 + i*1.35), `${Math.floor(fs*0.92)}px ${JP}`, '#d6e4ec', 'center'));
+  X.textBaseline = 'alphabetic';
+  X.globalAlpha = 1;
+}
+
+// Phones are played sideways: in portrait, ask to rotate and hold the game.
+function drawRotatePrompt() {
+  X.fillStyle = '#05080b'; X.fillRect(0, 0, W, H);
+  X.textBaseline = 'middle';
+  const fs = Math.max(14, W*0.05);
+  text('⟳', W/2, H*0.42, `${Math.floor(fs*3)}px ${JP}`, '#32d74b', 'center');
+  text('画面を横向きにしてください', W/2, H*0.58, `bold ${Math.floor(fs)}px ${JP}`, '#eaf6ff', 'center');
+  X.textBaseline = 'alphabetic';
+}
+
+// Quality: 'auto' drops to low (1× pixels, no blur filters, lighter weather)
+// when the frame rate stays under ~40 fps for a few seconds of driving.
+function cycleQuality() {
+  QUALITY = {auto: 'high', high: 'low', low: 'auto'}[QUALITY];
+  setLowQ(QUALITY === 'low');
+}
+function setLowQ(v) { if (LOWQ !== v) { LOWQ = v; resize(); } }
+const FPS = { t: 0, n: 0 };
+function watchFrameRate(dt) {
+  if (QUALITY !== 'auto' || LOWQ || !canDrive()) { FPS.t = FPS.n = 0; return; }
+  FPS.t += dt; FPS.n++;
+  if (FPS.t >= 4) { if (FPS.n/FPS.t < 40) setLowQ(true); FPS.t = FPS.n = 0; }
+}
+
+// home-screen icon, drawn once at start-up (iOS reads apple-touch-icon)
+function makeTouchIcon() {
+  const c = document.createElement('canvas'); c.width = c.height = 180;
+  const x = c.getContext('2d');
+  x.fillStyle = '#0d1a12'; x.fillRect(0, 0, 180, 180);
+  x.lineWidth = 16; x.strokeStyle = '#9acd32'; x.beginPath(); x.arc(90, 90, 58, 0, Math.PI*2); x.stroke();
+  x.fillStyle = '#fff'; x.font = `bold 58px ${JP}`; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText('山', 90, 94);
+  const l = document.createElement('link'); l.rel = 'apple-touch-icon'; l.href = c.toDataURL('image/png');
+  document.head.appendChild(l);
+}
+
+// ============================================================
+// MAIN RENDER
+// ============================================================
+function render() {
+  X.clearRect(0, 0, W, H);
+  HIT.length = 0;
+  CURVE.update();
+  VPROF.update();
+  SUN.update();
+  // forward view, clipped to the windscreen, then rolled with the car body
+  X.save();
+  X.beginPath(); X.rect(LAY.winX, LAY.winY, LAY.winW, LAY.winH); X.clip();
+  X.translate(CAM.cx, CAM.horizonY); X.rotate(-CAM.roll); X.translate(-CAM.cx, -CAM.horizonY);
+  drawSky();
+  drawCity();
+  drawHorizonHaze();
+  drawBallast();
+  drawSpeedStreaks();
+  drawBridgeShadows();
+  drawRails(OPP_X, 130, true);
+  drawRails(0, 130, false);
+  drawCatenary();
+  drawLineside();
+  drawStations();   // platforms, trains and yard all queue depth chunks on DL…
+  drawYard();
+  drawOncoming();
+  dlFlush();        // …painted together far -> near
+  drawHeadlight();
+  drawRain();
+  X.restore();
+  drawCabShell();
+  // driver's desk
+  drawConsole();
+  drawMasterController();
+  drawSpeedometer();
+  drawGauges();
+  drawLamps();
+  drawTims();
+  drawHintBar();
+  drawTouchUI();
+  if (TIMS_BIG) drawTims(true);
+  if (S.phase === 'start') drawTitle();
+  else { drawStopSummary(); drawDepartSignal(); }
+}
+
+// ============================================================
+// SOUND — synthesised with Web Audio, no asset files. Starts on the first key
+// press (browsers block audio until a user gesture); M mutes.
+//   rolling noise and rail-joint clacks, E235 (SiC VVVF) motor whine under
+//   power and regenerative braking, brake air and squeal, ATC bell on a limit
+//   change, overspeed alarm, door chime, and 車内放送 via speech synthesis.
+// ============================================================
+const SPEAK_NAME = { '高輪GW': '高輪ゲートウェイ' };
+const AUDIO = {
+  ctx: null, on: true, phase: '', limit: 0, lever: 0, moving: false, alarmT: 0,
+  init() {
+    if (this.ctx) return;
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const c = this.ctx = new AC();
+    this.out = c.createGain(); this.out.gain.value = 0.55; this.out.connect(c.destination);
+    const len = c.sampleRate*2;
+    this.white = c.createBuffer(1, len, c.sampleRate);
+    this.brown = c.createBuffer(1, len, c.sampleRate);
+    const w = this.white.getChannelData(0), b = this.brown.getChannelData(0);
+    for (let i = 0, v = 0; i < len; i++) {
+      w[i] = Math.random()*2 - 1;
+      v = (v + 0.02*w[i])/1.02; b[i] = v*3.5;
+    }
+    const loop = (buf) => { const n = c.createBufferSource(); n.buffer = buf; n.loop = true; n.start(); return n; };
+    // rolling: brown noise, low-passed, louder and brighter with speed
+    this.rollF = c.createBiquadFilter(); this.rollF.type = 'lowpass';
+    this.rollG = c.createGain(); this.rollG.gain.value = 0;
+    loop(this.brown).connect(this.rollF).connect(this.rollG).connect(this.out);
+    // motor: a magnetic hum that follows the rotor, plus the inverter's carrier whine
+    this.humO = c.createOscillator(); this.humO.type = 'sawtooth';
+    this.humF = c.createBiquadFilter(); this.humF.type = 'bandpass'; this.humF.Q.value = 3;
+    this.whO = c.createOscillator(); this.whO.type = 'triangle';
+    this.motG = c.createGain(); this.motG.gain.value = 0;
+    this.humO.connect(this.humF).connect(this.motG);
+    const wg = c.createGain(); wg.gain.value = 0.35; this.whO.connect(wg).connect(this.motG);
+    this.motG.connect(this.out);
+    this.humO.start(); this.whO.start();
+    // brake squeal in the last metres of a stop
+    this.sqO = c.createOscillator(); this.sqO.type = 'sine'; this.sqO.frequency.value = 3150;
+    this.sqG = c.createGain(); this.sqG.gain.value = 0;
+    this.sqO.connect(this.sqG).connect(this.out); this.sqO.start();
+  },
+  toggle() {
+    this.on = !this.on;
+    if (this.ctx) this.out.gain.setTargetAtTime(this.on ? 0.55 : 0, this.ctx.currentTime, 0.05);
+    if (!this.on && window.speechSynthesis) speechSynthesis.cancel();
+  },
+  // one-shot: filtered noise burst
+  burst(type, freq, q, gain, dur) {
+    const c = this.ctx, t = c.currentTime, n = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain();
+    n.buffer = this.white; f.type = type; f.frequency.value = freq; f.Q.value = q;
+    g.gain.setValueAtTime(gain, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    n.connect(f).connect(g).connect(this.out); n.start(t); n.stop(t + dur + 0.05);
+  },
+  // one-shot: a decaying tone
+  tone(freq, gain, dur, type, delay) {
+    const c = this.ctx, t = c.currentTime + (delay||0), o = c.createOscillator(), g = c.createGain();
+    o.type = type || 'sine'; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(gain, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    o.connect(g).connect(this.out); o.start(t); o.stop(t + dur + 0.05);
+  },
+  knock(k, v) {                                   // ガタン: a click and a thump per axle
+    if (!this.ctx || v <= 0.01) return;
+    this.burst('bandpass', 1700, 1.2, 0.22*k*(0.3+v), 0.05);
+    this.tone(85, 0.25*k*(0.3+v), 0.09, 'sine');
+  },
+  say(str) {
+    if (!this.on || !window.speechSynthesis) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(str);
+    u.lang = 'ja-JP'; u.rate = 1.0; u.volume = 0.8;
+    speechSynthesis.speak(u);
+  },
+  update(dt) {
+    if (!this.ctx) return;
+    const c = this.ctx, t = c.currentTime, tr = S.train;
+    const live = S.phase !== 'start' && S.phase !== 'result';
+    const v = live ? tr.speed : 0, vr = v/PHYSICS.MAX_SPEED;
+    this.rollG.gain.setTargetAtTime(Math.min(1, vr*1.3)*0.32, t, 0.1);
+    this.rollF.frequency.setTargetAtTime(160 + v*14, t, 0.1);
+    // traction: power notches, or regenerative braking down to ~5 km/h
+    const load = !live || tr.emergency ? 0 : tr.lever > 0 ? tr.lever/5 : tr.lever < 0 && v > 5 ? -tr.lever/8*0.7 : 0;
+    this.motG.gain.setTargetAtTime(v > 0.3 || tr.lever > 0 ? load*0.07 : 0, t, 0.12);
+    this.humO.frequency.setTargetAtTime(28 + v*9, t, 0.05);
+    this.humF.frequency.setTargetAtTime(120 + v*22, t, 0.05);
+    this.whO.frequency.setTargetAtTime(v < 32 ? 760 + v*22 : 1460 + (v-32)*5, t, 0.05);
+    const braking = live && (tr.lever < 0 || tr.emergency);
+    this.sqG.gain.setTargetAtTime(braking && v > 0 && v < 9 ? 0.012*(1 - v/9) : 0, t, 0.08);
+    this.sqO.frequency.setTargetAtTime(3150 + Math.sin(t*23)*40, t, 0.02);
+    if (!live) { this.phase = S.phase; this.moving = false; return; }
+    // brake application: a short puff of air for each notch applied
+    if (tr.lever < this.lever && tr.lever < 0) this.burst('highpass', 2600, 0.7, 0.05, 0.25);
+    this.lever = tr.lever;
+    // coming to a stand: the long プシュー as the brakes hold
+    const moving = v > 0;
+    if (this.moving && !moving) this.burst('highpass', 1800, 0.5, 0.09, 1.1);
+    this.moving = moving;
+    // ATC: a bell whenever the signalled limit changes, an alarm while over it
+    const lim = getSpeedLimit(tr.position);
+    if (this.limit && lim !== this.limit) { this.tone(1568, 0.12, 1.2); this.tone(2093, 0.07, 1.0); }
+    this.limit = lim;
+    this.alarmT -= dt;
+    if (v > lim + 2 && this.alarmT <= 0) { this.tone(880, 0.06, 0.18, 'square'); this.alarmT = 0.5; }
+    // doors and announcements on phase changes
+    if (S.phase !== this.phase) {
+      const next = STATIONS[(S.currentStation+1) % STATIONS.length], nm = SPEAK_NAME[next.name] || next.name;
+      if (S.phase === 'stopped') {                      // doors open
+        this.tone(1175, 0.08, 0.5); this.tone(880, 0.08, 0.7, 'sine', 0.35);
+        const here = STATIONS[S.currentStation];
+        this.say(`${SPEAK_NAME[here.name] || here.name}、${SPEAK_NAME[here.name] || here.name}。`);
+      } else if (S.phase === 'departing') {             // doors close
+        this.tone(880, 0.08, 0.4); this.tone(1175, 0.08, 0.6, 'sine', 0.3);
+      } else if (S.phase === 'running' && this.phase === 'departing') {   // 運行指示灯 lit
+        this.tone(1568, 0.07, 0.25); this.tone(1568, 0.07, 0.25, 'sine', 0.3);
+        this.say(`次は、${nm}、${nm}。`);
+      } else if (S.phase === 'approaching') {
+        this.say(`まもなく、${nm}です。`);
+      }
+      this.phase = S.phase;
+    }
+  },
+};
+
+// ============================================================
+// ROUTE — 外回り (品川→大崎→渋谷…, clockwise) or 内回り (品川→高輪GW→
+// 田町…, anticlockwise), chosen on the title screen with D. Every
+// position-keyed table is authored 外回り; for 内回り it is mirrored round the
+// loop (x → TOTAL_LOOP − x) and re-ordered, and anything with a side swaps
+// left and right. The train always runs toward increasing position.
+// ============================================================
+const OUTER = {
+  stations: STATIONS.map(st => ({...st})), curves: CURVES.map(c => [...c]),
+  profile: PROFILE.map(p => [...p]), districts: DISTRICTS.map(d => ({...d})),
+  landmarks: LANDMARKS.map(l => ({...l})), bridges: [...BRIDGES], yard: [...YARD],
+};
+const ROUTE = {
+  dir: 'outer', name: '外回り', hd0: 0,
+  trainNo: '1185G',   // 列番: odd for 外回り, even for 内回り (placeholder numbers)
+  set(dir) {
+    const L = TOTAL_LOOP, inner = dir === 'inner', fill = (arr, items) => { arr.length = 0; arr.push(...items); };
+    this.dir = dir; this.name = inner ? '内回り' : '外回り'; this.hd0 = inner ? Math.PI : 0;
+    this.trainNo = inner ? '1184G' : '1185G';
+    if (!inner) {
+      fill(STATIONS, OUTER.stations.map(st => ({...st})));
+      fill(CURVES, OUTER.curves.map(c => [...c]));
+      fill(PROFILE, OUTER.profile.map(p => [...p]));
+      fill(DISTRICTS, OUTER.districts.map(d => ({...d})));
+      fill(LANDMARKS, OUTER.landmarks.map(l => ({...l})));
+      fill(BRIDGES, OUTER.bridges);
+      fill(YARD, OUTER.yard); YARD_SIDE = -1;
+    } else {
+      fill(STATIONS, OUTER.stations.map(st => ({...st, pos: (L - st.pos) % L}))
+        .sort((a, b) => a.pos - b.pos).map((st, i) => ({...st, id: i})));
+      fill(CURVES, OUTER.curves.map(([a, b, r, d]) => [L - b, L - a, r, -d]).reverse());
+      fill(PROFILE, OUTER.profile.map(([x, e]) => [L - x, e]).reverse());
+      fill(DISTRICTS, OUTER.districts.map((d, i) => ({...d, to: L - (i ? OUTER.districts[i-1].to : 0),
+        forest: d.forest ? -d.forest : undefined})).reverse());
+      fill(LANDMARKS, OUTER.landmarks.map(l => ({...l, pos: L - l.pos, x: -l.x})));
+      fill(BRIDGES, OUTER.bridges.map(p => L - p - BR_D));
+      fill(YARD, [L - OUTER.yard[1], L - OUTER.yard[0]]); YARD_SIDE = 1;
+    }
+    HEADING = buildHeading();
+    buildTimetable();
+  },
+};
+
+// ============================================================
+// GAME LOOP
+// ============================================================
+let FRAME_DT = 1/60;   // the last frame's dt — renderers use it for motion blur
+let lastTime = 0;
+function loop(ts) {
+  if (lastTime===0) lastTime=ts;
+  let dt = (ts-lastTime)/1000;
+  lastTime=ts;
+  if (dt>0.1) dt=0.1;
+  FRAME_DT = dt;
+  if (TOUCH && H > W) { drawRotatePrompt(); requestAnimationFrame(loop); return; }
+  watchFrameRate(dt);
+  updateGame(dt);
+  CABMOTION.update(dt);
+  WIPER.update(dt);
+  AUDIO.update(dt);
+  render();
+  requestAnimationFrame(loop);
+}
+
+function init() {
+  resize();
+  makeTouchIcon();
+  buildTimetable();
+  S.phase='start';
+  OV.style.display='none';
+  requestAnimationFrame(loop);
+}
+window.addEventListener('load', init);
+window.addEventListener('resize', () => { resize(); if (S.phase==='start'||S.phase==='result') render(); });
+</script>
+</body>
+</html>
